@@ -7,7 +7,8 @@ const HOME_CALENDAR_ID = 4;
 const ALL_CALENDARS = 0;
 const RETURN_OK = 100;
 const WEEKDAYS = ['søn', 'man', 'tir', 'ons', 'tor', 'fre', 'lør'];
-const E_VASKERI_APP = 'intent://#Intent;package=dk.nortec.elaundry;end';
+// Appen erklærer linktypen evaskeri://. Kun pakkenavnet åbner Google Play i stedet.
+const E_VASKERI_APP = 'intent://open#Intent;scheme=evaskeri;package=dk.nortec.elaundry;end';
 const WASH_PAUSE_DAYS = 10;
 
 const $ = (id) => document.getElementById(id);
@@ -251,7 +252,10 @@ function appLink() {
 function openSlot(day, slot) {
   const title = el('h2', '', describe(day, slot));
   if (slot.kind === 'mine') {
-    return sheet(title, el('p', 'muted', 'Det er din tid. Afbestil den i e-vaskeri-appen.'), appLink(), closeButton());
+    return sheet(
+      title, el('p', '', view.place),
+      action('Slet booking', 'danger', () => confirmCancel(day, slot)), closeButton(),
+    );
   }
   if (slot.kind === 'max') {
     return sheet(title, el('p', 'muted', 'Tiden er ledig, men du har brugt alle dine bookinger.'), closeButton());
@@ -263,14 +267,48 @@ function openSlot(day, slot) {
   );
 }
 
-// Svaret på selve bookingen viser ikke tiden som din, så vi læser kalenderen bagefter.
-async function isMine(date, index) {
+function confirmCancel(day, slot) {
+  const confirm = action('Ja, slet bookingen', 'danger', () => cancelBooking(day.date, slot.index, confirm));
+  sheet(
+    el('h2', '', `Slet ${describe(day, slot)}?`), el('p', '', view.place),
+    el('p', 'muted', 'Tiden bliver ledig for alle andre med det samme.'),
+    closeButton('Behold bookingen'), confirm,
+  );
+}
+
+// Svaret på selve kaldet viser ikke ændringen, så vi læser kalenderen bagefter.
+async function slotBecomes(date, index, isDone) {
   for (const delay of [0, 1500]) {
     await new Promise((resolve) => setTimeout(resolve, delay));
     await fetchCalendar();
-    if (view.days.find((d) => d.date === date)?.slots[index]?.kind === 'mine') return true;
+    if (isDone(view.days.find((d) => d.date === date)?.slots[index]?.kind)) return true;
   }
   return false;
+}
+
+async function cancelBooking(date, index, button) {
+  button.disabled = true;
+  button.textContent = 'Sletter...';
+  try {
+    await fetchCalendar();
+    const slot = view.days.find((d) => d.date === date)?.slots[index];
+    // Samme token booker en ledig tid, så det må kun sendes for en tid der stadig er din.
+    if (slot?.kind !== 'mine' || typeof slot.token !== 'string') {
+      $('sheet').close();
+      toast(slot?.kind === 'mine' ? 'Tiden kan ikke slettes her' : 'Bookingen findes ikke længere');
+      return refresh();
+    }
+    await api('Location/Calendar5', {
+      session: slot.token, date: `#${date}`, days: 8, calendarid: calendarId,
+    });
+    const cancelled = await slotBecomes(date, index, (kind) => kind !== 'mine');
+    $('sheet').close();
+    toast(cancelled ? 'Booking slettet' : 'Kunne ikke slette. Tjek kalenderen.');
+  } catch (error) {
+    $('sheet').close();
+    toast(`${error.message}. Tjek kalenderen.`);
+  }
+  await refresh();
 }
 
 async function book(date, index, button) {
@@ -288,7 +326,7 @@ async function book(date, index, button) {
     await api('Location/Calendar5', {
       session: slot.token, date: `#${date}`, days: 8, calendarid: calendarId,
     });
-    const confirmed = await isMine(date, index);
+    const confirmed = await slotBecomes(date, index, (kind) => kind === 'mine');
     $('sheet').close();
     toast(confirmed ? 'Booket!' : 'Kunne ikke bekræfte. Tjek kalenderen.');
   } catch (error) {

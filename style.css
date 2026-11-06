@@ -31,6 +31,7 @@ button:disabled { opacity: .55; }
 :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .primary { background: var(--accent); color: var(--panel); font-weight: 600; width: 100%; }
 .secondary, .button { background: var(--taken); color: var(--text); width: 100%; }
+.danger { background: var(--error); color: var(--panel); font-weight: 600; width: 100%; }
 .ghost { background: none; color: var(--text); font-size: 1.4rem; width: 48px; padding: 0; }
 .wide { width: calc(100% - 24px); margin: 16px 12px 28px; }
 
