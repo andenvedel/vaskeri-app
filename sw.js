@@ -18,7 +18,8 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== location.origin) return;
   event.respondWith(
-    fetch(event.request)
+    // Spørger altid serveren, så HTML og JS ikke kommer fra hver sin version.
+    fetch(event.request.url, { cache: 'no-cache' })
       .then((response) => {
         const copy = response.clone();
         caches.open(CACHE).then((cache) => cache.put(event.request, copy));

@@ -197,9 +197,12 @@ function machine(unit) {
 }
 
 function renderLive() {
+  const box = $('live');
+  // En gemt index.html fra før maskinstatus kan møde en nyere app.js.
+  if (!box) return;
   const section = liveSection();
-  $('live').hidden = !section?.units.length;
-  if ($('live').hidden) return;
+  box.hidden = !section?.units.length;
+  if (box.hidden) return;
   $('liveUnits').replaceChildren(...section.units.map(machine));
   $('liveUpdated').textContent = section.updated;
 }
