@@ -10,6 +10,10 @@ const WEEKDAYS = ['søn', 'man', 'tir', 'ons', 'tor', 'fre', 'lør'];
 // Appen erklærer linktypen evaskeri://. Kun pakkenavnet åbner Google Play i stedet.
 const E_VASKERI_APP = 'intent://open#Intent;scheme=evaskeri;package=dk.nortec.elaundry;end';
 const WASH_PAUSE_DAYS = 10;
+// Serveren opdaterer selv kun hvert par minutter, så oftere giver ingen nye tal.
+const LIVE_MIN_GAP_MS = 2 * 60 * 1000;
+const LIVE_TICK_MS = 30 * 1000;
+const MACHINE_KIND = { Fri: 'free', Optaget: 'busy', Reserveret: 'reserved' };
 
 const $ = (id) => document.getElementById(id);
 const saved = JSON.parse(localStorage.getItem('vaskeri') || '{}');
@@ -21,6 +25,8 @@ let calendarId = HOME_CALENDAR_ID;
 let loading = false;
 let refreshAgain = false;
 let balance = null;
+let live = null;
+let liveFetched = 0;
 
 class LoginRejected extends Error {}
 
@@ -132,6 +138,80 @@ async function loadBalance() {
   }
 }
 
+function remainingMinutes(process) {
+  const hours = /(\d+)\s*tim/i.exec(process || '');
+  const minutes = /(\d+)\s*min/i.exec(process || '');
+  if (!hours && !minutes) return null;
+  return Number(hours?.[1] || 0) * 60 + Number(minutes?.[1] || 0);
+}
+
+// Book.Session på en maskine reserverer den, hvis det sendes, så det gemmes aldrig.
+function parseLive(data) {
+  const now = Date.now();
+  return data.Sections.map((section) => ({
+    name: section.Name,
+    title: section.Title,
+    updated: section.Rows.find((row) => row.Columns2)?.Columns2.Cells[0] || '',
+    units: section.Rows.flatMap((row) => row.Units || []).map((unit) => {
+      const minutes = remainingMinutes(unit.Process);
+      return {
+        text: unit.Text, status: unit.Status || '',
+        endsAt: minutes === null ? null : now + minutes * 60000,
+      };
+    }),
+  }));
+}
+
+// Ét kald dækker alle vaskerier, så skift af vaskeri koster ingen ekstra kald.
+async function loadLive() {
+  if (Date.now() - liveFetched < LIVE_MIN_GAP_MS) return;
+  liveFetched = Date.now();
+  try {
+    const data = await api('Location/Live5', { session: saved.session });
+    if (data.Return !== RETURN_OK) return;
+    if (data.Session) {
+      saved.session = data.Session;
+      save();
+    }
+    live = parseLive(data);
+    renderLive();
+  } catch {
+    // Maskinstatus er rar at have, men må aldrig forstyrre kalenderen.
+  }
+}
+
+const liveSection = () => live?.find((section) => section.title === view.place)
+  || live?.find((section) => section.name === `LiveL${calendarId}`);
+
+function machine(unit) {
+  const minutes = unit.endsAt === null ? null : Math.max(0, Math.ceil((unit.endsAt - Date.now()) / 60000));
+  const type = /tørre/i.test(unit.text) ? 'dryer' : 'washer';
+  const node = el('div', `machine ${type} ${MACHINE_KIND[unit.status] || 'other'}`);
+  node.setAttribute('role', 'img');
+  node.setAttribute('aria-label', `${unit.text}: ${unit.status}${minutes === null ? '' : `, ${minutes} minutter tilbage`}`);
+  node.append(
+    el('span', 'door', String(minutes ?? unit.status.slice(0, 3))),
+    el('span', 'name', unit.text.replace('Vaskemaskine', 'Vask').replace('Tørretumbler', 'Tørre')),
+  );
+  return node;
+}
+
+function renderLive() {
+  const section = liveSection();
+  $('live').hidden = !section?.units.length;
+  if ($('live').hidden) return;
+  $('liveUnits').replaceChildren(...section.units.map(machine));
+  $('liveUpdated').textContent = section.updated;
+}
+
+// Tæller ned på telefonen. Der hentes kun nyt, når en maskine burde være færdig.
+function tickLive() {
+  if (document.hidden || $('app').hidden || !live) return;
+  renderLive();
+  const finished = liveSection()?.units.some((unit) => unit.endsAt !== null && unit.endsAt <= Date.now());
+  if (finished && !loading && !$('sheet').open) loadLive();
+}
+
 function renderLaundries() {
   const laundries = saved.laundries?.length ? saved.laundries : [{ id: calendarId, title: view.place }];
   $('laundry').replaceChildren(...laundries.map(({ id, title }) => {
@@ -147,6 +227,7 @@ function switchLaundry(id) {
   view = { days: [], remaining: 0, place: '' };
   $('calendar').replaceChildren();
   $('status').textContent = '';
+  renderLive();
   refresh();
 }
 
@@ -163,7 +244,7 @@ async function refresh() {
     await loadLaundries();
     renderLaundries();
     syncPause();
-    loadBalance().then(renderStatus);
+    loadBalance().then(renderStatus).then(loadLive);
   } catch (error) {
     if (error instanceof LoginRejected) return showLogin('Login blev afvist. Tjek dit password.');
     toast(error.message);
@@ -187,6 +268,7 @@ function render() {
   calendar.replaceChildren();
   renderLaundries();
   renderPause();
+  renderLive();
   if (!view.days.length) return;
   renderStatus();
 
@@ -367,7 +449,7 @@ function activePause() {
 function renderPause() {
   const until = activePause();
   const chip = $('pauseChip');
-  chip.textContent = until ? `Pause: ingen besked før ${shortDate(until)}` : 'Har du lige vasket?';
+  chip.textContent = until ? `Pause: ingen besked før ${shortDate(until)}` : 'Sæt notifikationer på pause';
   chip.classList.toggle('on', Boolean(until));
 }
 
@@ -511,6 +593,8 @@ window.addEventListener('hashchange', flashHash);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && !$('app').hidden) refresh();
 });
+
+setInterval(tickLive, LIVE_TICK_MS);
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 if (saved.user && saved.password) showApp();
