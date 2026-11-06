@@ -2,7 +2,9 @@
 
 const API = 'https://back-nortec.datpro2.dk';
 const NTFY = 'https://ntfy.sh';
-const CALENDAR_ID = 2;
+// Vaskeriet appen åbner på, og som notifikationerne handler om.
+const HOME_CALENDAR_ID = 4;
+const ALL_CALENDARS = 0;
 const RETURN_OK = 100;
 const WEEKDAYS = ['søn', 'man', 'tir', 'ons', 'tor', 'fre', 'lør'];
 const E_VASKERI_APP = 'intent://#Intent;package=dk.nortec.elaundry;end';
@@ -14,7 +16,9 @@ const save = () => localStorage.setItem('vaskeri', JSON.stringify(saved));
 
 let view = { days: [], remaining: 0, place: '' };
 let daysShown = 31;
+let calendarId = HOME_CALENDAR_ID;
 let loading = false;
+let refreshAgain = false;
 
 class LoginRejected extends Error {}
 
@@ -83,7 +87,7 @@ function parseCalendar(data) {
 
 async function fetchCalendar(retry = true) {
   const data = await api('Location/Calendar5', {
-    session: saved.session || '', date: '', days: daysShown, calendarid: CALENDAR_ID,
+    session: saved.session || '', date: '', days: daysShown, calendarid: calendarId,
   });
   if (data.Return !== RETURN_OK) {
     if (!retry) throw new Error('Kalenderen kunne ikke hentes');
@@ -98,12 +102,47 @@ async function fetchCalendar(retry = true) {
   return calendar;
 }
 
+async function loadLaundries() {
+  if (saved.laundries?.length) return;
+  const data = await api('Location/Calendar5', {
+    session: saved.session, date: '', days: 1, calendarid: ALL_CALENDARS,
+  });
+  if (data.Return !== RETURN_OK) return;
+  saved.session = data.Session;
+  saved.laundries = data.Sections.map((section) => ({
+    id: section.Rows[0].Calendar.CalendarId, title: section.Title,
+  }));
+  save();
+}
+
+function renderLaundries() {
+  const laundries = saved.laundries?.length ? saved.laundries : [{ id: calendarId, title: view.place }];
+  $('laundry').replaceChildren(...laundries.map(({ id, title }) => {
+    const option = el('option', '', title);
+    option.value = id;
+    option.selected = id === calendarId;
+    return option;
+  }));
+}
+
+function switchLaundry(id) {
+  calendarId = id;
+  view = { days: [], remaining: 0, place: '' };
+  $('calendar').replaceChildren();
+  $('status').textContent = '';
+  refresh();
+}
+
 async function refresh() {
-  if (loading) return;
+  if (loading) {
+    refreshAgain = true;
+    return;
+  }
   loading = true;
   $('refresh').disabled = true;
   try {
     await fetchCalendar();
+    await loadLaundries();
     render();
     syncPause();
   } catch (error) {
@@ -112,13 +151,17 @@ async function refresh() {
   } finally {
     loading = false;
     $('refresh').disabled = false;
+    if (refreshAgain) {
+      refreshAgain = false;
+      refresh();
+    }
   }
 }
 
 function render() {
   const calendar = $('calendar');
   calendar.replaceChildren();
-  $('place').textContent = view.place;
+  renderLaundries();
   $('status').textContent = `Bookinger tilbage: ${view.remaining}`;
   renderPause();
   if (!view.days.length) return;
@@ -141,7 +184,7 @@ function render() {
     const row = el('div', 'row');
     row.id = `d${day.date}`;
     if (day.date === today) row.classList.add('today');
-    if (pausedUntil && day.date < pausedUntil) row.classList.add('dimmed');
+    if (calendarId === HOME_CALENDAR_ID && pausedUntil && day.date < pausedUntil) row.classList.add('dimmed');
     const label = el('div', 'day');
     label.append(el('strong', '', day.date === today ? 'i dag' : WEEKDAYS[date.getDay()]), el('span', '', shortDate(day.date)));
     row.append(label);
@@ -176,7 +219,10 @@ function describe(day, slot) {
 
 function flashHash() {
   const date = location.hash.slice(1);
-  const row = /^\d{4}-\d{2}-\d{2}$/.test(date) && $(`d${date}`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+  // Notifikationer handler altid om hjemmevaskeriet.
+  if (calendarId !== HOME_CALENDAR_ID) return switchLaundry(HOME_CALENDAR_ID);
+  const row = $(`d${date}`);
   if (!row) return;
   row.scrollIntoView({ block: 'center' });
   row.classList.add('flash');
@@ -211,7 +257,10 @@ function openSlot(day, slot) {
     return sheet(title, el('p', 'muted', 'Tiden er ledig, men du har brugt alle dine bookinger.'), closeButton());
   }
   const confirm = action('Book denne tid', 'primary', () => book(day.date, slot.index, confirm));
-  sheet(title, el('p', 'muted', `Du har ${view.remaining} booking(er) tilbage.`), confirm, closeButton('Annuller'));
+  sheet(
+    title, el('p', '', view.place), el('p', 'muted', `Du har ${view.remaining} booking(er) tilbage her.`),
+    confirm, closeButton('Annuller'),
+  );
 }
 
 async function book(date, index, button) {
@@ -227,7 +276,7 @@ async function book(date, index, button) {
       return toast('Tiden er desværre taget');
     }
     const data = await api('Location/Calendar5', {
-      session: slot.token, date: `#${date}`, days: 8, calendarid: CALENDAR_ID,
+      session: slot.token, date: `#${date}`, days: 8, calendarid: calendarId,
     });
     let confirmed = false;
     if (data.Return === RETURN_OK) {
@@ -300,6 +349,7 @@ async function syncPause() {
   try {
     const response = await fetch(`${controlUrl()}/json?poll=1&since=12h`);
     const messages = (await response.text()).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    const before = saved.pauseUntil;
     for (const message of messages) {
       if (message.event !== 'message') continue;
       const sent = new Date(message.time * 1000);
@@ -308,6 +358,7 @@ async function syncPause() {
       else if (word === 'pause' && /^\d+$/.test(days || '')) saved.pauseUntil = isoDate(addDays(sent, Number(days)));
       else if (word === 'resume') saved.pauseUntil = null;
     }
+    if (saved.pauseUntil === before) return;
     save();
     render();
   } catch {
@@ -388,6 +439,7 @@ $('loginForm').addEventListener('submit', submitLogin);
 $('refresh').addEventListener('click', refresh);
 $('menu').addEventListener('click', openMenu);
 $('pauseChip').addEventListener('click', openPause);
+$('laundry').addEventListener('change', (event) => switchLaundry(Number(event.target.value)));
 $('more').addEventListener('click', () => { daysShown += 30; refresh(); });
 $('sheet').addEventListener('click', (event) => { if (event.target === $('sheet')) $('sheet').close(); });
 window.addEventListener('hashchange', flashHash);
