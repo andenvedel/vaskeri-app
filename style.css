@@ -1,0 +1,90 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f6; --panel: #ffffff; --text: #17201c; --muted: #5d6a64; --line: #dfe4e1;
+  --free: #1f8a63; --free-text: #ffffff; --mine: #2457c5; --mine-text: #ffffff;
+  --taken: #e6eae8; --taken-text: #7b8782; --accent: #14614a; --error: #b3261e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101513; --panel: #1a211e; --text: #e8eeeb; --muted: #9daaa4; --line: #2c3531;
+    --free: #2fa67a; --free-text: #06140f; --mine: #7fa4f5; --mine-text: #0a1430;
+    --taken: #232b28; --taken-text: #7f8c86; --accent: #5fc9a2; --error: #f2b8b5;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+}
+h1 { font-size: 1.15rem; margin: 0; }
+p { margin: 0; }
+.muted { color: var(--muted); font-size: .85rem; }
+.error { color: var(--error); font-size: .9rem; }
+button, .button {
+  font: inherit; min-height: 48px; border: 0; border-radius: 12px; padding: 0 16px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; text-decoration: none;
+}
+button:disabled { opacity: .55; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.primary { background: var(--accent); color: var(--panel); font-weight: 600; width: 100%; }
+.secondary, .button { background: var(--taken); color: var(--text); width: 100%; }
+.ghost { background: none; color: var(--text); font-size: 1.4rem; width: 48px; padding: 0; }
+.wide { width: calc(100% - 24px); margin: 16px 12px 28px; }
+
+#login { max-width: 420px; margin: 0 auto; padding: 48px 20px; display: grid; gap: 12px; }
+#login h1 { font-size: 1.6rem; }
+form { display: grid; gap: 14px; margin-top: 8px; }
+label { display: grid; gap: 4px; font-size: .9rem; color: var(--muted); }
+input {
+  font: inherit; color: var(--text); background: var(--panel); min-height: 48px; width: 100%;
+  border: 1px solid var(--line); border-radius: 10px; padding: 0 12px;
+}
+
+.bar {
+  display: flex; align-items: center; gap: 4px; padding: 10px 6px 10px 14px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.bar > div { flex: 1; min-width: 0; }
+.chip {
+  width: calc(100% - 24px); margin: 10px 12px 2px; background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); font-size: .95rem;
+}
+.chip.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+#calendar { padding: 0 12px; }
+.row { display: grid; grid-template-columns: 52px repeat(5, 1fr); gap: 4px; margin-bottom: 4px; align-items: stretch; }
+.head {
+  position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 8px 0 6px; margin: 0;
+  font-size: .78rem; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums;
+}
+.week { font-size: .8rem; font-weight: 600; color: var(--muted); padding: 14px 0 6px; }
+.day { font-size: .78rem; line-height: 1.2; display: flex; flex-direction: column; justify-content: center; }
+.day strong { font-size: .9rem; }
+.today .day strong { color: var(--accent); }
+.dimmed .cell { opacity: .45; }
+.cell {
+  min-height: 46px; min-width: 0; padding: 0; border-radius: 8px; font-size: .78rem;
+  display: flex; align-items: center; justify-content: center; background: var(--taken); color: var(--taken-text);
+}
+.cell.free { background: var(--free); color: var(--free-text); font-weight: 600; }
+.cell.mine { background: var(--mine); color: var(--mine-text); font-weight: 600; }
+.cell.max { background: none; border: 1.5px dashed var(--free); color: var(--text); }
+.cell.past { background: none; }
+.flash { animation: flash 2.4s ease-out; border-radius: 8px; }
+@keyframes flash { 0%, 50% { background: color-mix(in srgb, var(--accent) 35%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .flash { animation: none; outline: 2px solid var(--accent); } }
+
+dialog {
+  border: 0; padding: 20px 20px calc(20px + env(safe-area-inset-bottom)); margin: auto 0 0; width: 100%; max-width: 100%;
+  background: var(--panel); color: var(--text); border-radius: 18px 18px 0 0;
+}
+dialog::backdrop { background: rgb(0 0 0 / .45); }
+#sheetBody { display: grid; gap: 10px; max-width: 480px; margin: 0 auto; }
+#sheetBody h2 { font-size: 1.25rem; margin: 0; }
+#toast {
+  position: fixed; left: 16px; right: 16px; bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 10;
+  background: var(--text); color: var(--bg); padding: 12px 16px; border-radius: 12px; text-align: center;
+}

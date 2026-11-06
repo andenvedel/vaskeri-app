@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'self' https://back-nortec.datpro2.dk https://ntfy.sh; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#14614a">
+<title>Vasketider</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<section id="login" hidden>
+  <h1>Vasketider</h1>
+  <p class="muted">Log ind med din e-vaskeri-konto. Oplysningerne gemmes kun på denne telefon.</p>
+  <form id="loginForm">
+    <label>Mobilnr. eller e-mail <input id="user" autocomplete="username" required></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+    <label>ntfy-emne (valgfrit, til pause) <input id="topicLogin" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <p id="loginError" class="error" role="alert" hidden></p>
+    <button class="primary" id="loginButton">Log ind</button>
+  </form>
+</section>
+
+<main id="app" hidden>
+  <header class="bar">
+    <div>
+      <h1 id="place">Vasketider</h1>
+      <p id="status" class="muted"></p>
+    </div>
+    <button id="refresh" class="ghost" aria-label="Opdater">↻</button>
+    <button id="menu" class="ghost" aria-label="Indstillinger">☰</button>
+  </header>
+  <button id="pauseChip" class="chip">Har du lige vasket?</button>
+  <div id="calendar" aria-live="polite"></div>
+  <button id="more" class="secondary wide">Vis 30 dage mere</button>
+</main>
+
+<dialog id="sheet"><div id="sheetBody"></div></dialog>
+<div id="toast" role="status" hidden></div>
+</body>
+</html>
