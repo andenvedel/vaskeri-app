@@ -263,6 +263,16 @@ function openSlot(day, slot) {
   );
 }
 
+// Svaret på selve bookingen viser ikke tiden som din, så vi læser kalenderen bagefter.
+async function isMine(date, index) {
+  for (const delay of [0, 1500]) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    await fetchCalendar();
+    if (view.days.find((d) => d.date === date)?.slots[index]?.kind === 'mine') return true;
+  }
+  return false;
+}
+
 async function book(date, index, button) {
   button.disabled = true;
   button.textContent = 'Booker...';
@@ -275,16 +285,10 @@ async function book(date, index, button) {
       $('sheet').close();
       return toast('Tiden er desværre taget');
     }
-    const data = await api('Location/Calendar5', {
+    await api('Location/Calendar5', {
       session: slot.token, date: `#${date}`, days: 8, calendarid: calendarId,
     });
-    let confirmed = false;
-    if (data.Return === RETURN_OK) {
-      const result = parseCalendar(data);
-      saved.session = result.session;
-      save();
-      confirmed = result.days.find((d) => d.date === date)?.slots[index]?.kind === 'mine';
-    }
+    const confirmed = await isMine(date, index);
     $('sheet').close();
     toast(confirmed ? 'Booket!' : 'Kunne ikke bekræfte. Tjek kalenderen.');
   } catch (error) {
