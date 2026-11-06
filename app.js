@@ -88,6 +88,7 @@ function parseCalendar(data) {
 }
 
 async function fetchCalendar(retry = true) {
+  const requested = calendarId;
   const data = await api('Location/Calendar5', {
     session: saved.session || '', date: '', days: daysShown, calendarid: calendarId,
   });
@@ -100,7 +101,7 @@ async function fetchCalendar(retry = true) {
   // Kun sessionen fra toppen af svaret. Tokens på de enkelte tider booker, hvis de sendes.
   saved.session = calendar.session;
   save();
-  view = calendar;
+  if (requested === calendarId) view = calendar;
   return calendar;
 }
 
@@ -158,9 +159,11 @@ async function refresh() {
   $('refresh').disabled = true;
   try {
     await fetchCalendar();
-    await Promise.all([loadLaundries(), loadBalance()]);
     render();
+    await loadLaundries();
+    renderLaundries();
     syncPause();
+    loadBalance().then(renderStatus);
   } catch (error) {
     if (error instanceof LoginRejected) return showLogin('Login blev afvist. Tjek dit password.');
     toast(error.message);
@@ -174,13 +177,18 @@ async function refresh() {
   }
 }
 
+function renderStatus() {
+  if (!view.days.length) return;
+  $('status').textContent = `Bookinger tilbage: ${view.remaining}${balance ? ` · Saldo: ${balance}` : ''}`;
+}
+
 function render() {
   const calendar = $('calendar');
   calendar.replaceChildren();
   renderLaundries();
-  $('status').textContent = `Bookinger tilbage: ${view.remaining}${balance ? ` · Saldo: ${balance}` : ''}`;
   renderPause();
   if (!view.days.length) return;
+  renderStatus();
 
   const head = el('div', 'row head');
   head.append(el('span'));
