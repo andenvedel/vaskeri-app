@@ -20,6 +20,7 @@ let daysShown = 31;
 let calendarId = HOME_CALENDAR_ID;
 let loading = false;
 let refreshAgain = false;
+let balance = null;
 
 class LoginRejected extends Error {}
 
@@ -116,6 +117,20 @@ async function loadLaundries() {
   save();
 }
 
+// Saldoen er rar at have, men må aldrig forhindre kalenderen i at blive vist.
+async function loadBalance() {
+  try {
+    const data = await api('User/Home3', { session: saved.session, locationid: '' });
+    if (data.Return !== RETURN_OK) return;
+    saved.session = data.Session;
+    save();
+    const section = data.Sections.find((s) => s.Name === 'Saldo');
+    balance = section?.Rows[0]?.Columns2?.Cells[1] || null;
+  } catch {
+    balance = null;
+  }
+}
+
 function renderLaundries() {
   const laundries = saved.laundries?.length ? saved.laundries : [{ id: calendarId, title: view.place }];
   $('laundry').replaceChildren(...laundries.map(({ id, title }) => {
@@ -143,7 +158,7 @@ async function refresh() {
   $('refresh').disabled = true;
   try {
     await fetchCalendar();
-    await loadLaundries();
+    await Promise.all([loadLaundries(), loadBalance()]);
     render();
     syncPause();
   } catch (error) {
@@ -163,7 +178,7 @@ function render() {
   const calendar = $('calendar');
   calendar.replaceChildren();
   renderLaundries();
-  $('status').textContent = `Bookinger tilbage: ${view.remaining}`;
+  $('status').textContent = `Bookinger tilbage: ${view.remaining}${balance ? ` · Saldo: ${balance}` : ''}`;
   renderPause();
   if (!view.days.length) return;
 
