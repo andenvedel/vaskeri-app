@@ -826,7 +826,7 @@ async function saveSettings(draft, button, message) {
   saved.settings = draft;
   save();
   $('sheet').close();
-  toast('Sendt. Du får besked, når tjekket har dem.');
+  toast('Gemt. Gælder fra næste tjek, højst 2 minutter efter.');
 }
 
 function settingsSheet(title, intro, draft, fields, extra = []) {
