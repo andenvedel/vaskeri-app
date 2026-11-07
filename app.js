@@ -449,11 +449,8 @@ async function refresh() {
     await loadLaundries();
     renderLaundries();
     syncPause();
-    loadHome().then(() => {
-      // En tid i gang kendes kun fra forsiden, så kalenderen må tegnes igen for at vise den.
-      if (bookings.some(isActive)) render();
-      else { renderStatus(); renderBookings(); }
-    }).then(loadLive);
+    // En tid i gang kendes kun fra forsiden, så kalenderen må tegnes igen for at vise den.
+    loadHome().then(render).then(loadLive);
   } catch (error) {
     if (error instanceof LoginRejected) return showLogin('Login blev afvist. Tjek dit password.');
     toast(error.message);
@@ -521,13 +518,15 @@ const CELL_TEXT = { free: 'Fri', mine: 'Min tur', max: 'Maks', taken: '–', pas
 
 function cell(day, slot) {
   // Kalenderen viser en tid i gang som passeret. Kun forsiden ved, at den er din.
+  // Listen fra forsiden kan være forældet lige efter en sletning, så tiden skal også være nu.
   const booking = slot.kind === 'mine' ? null : bookingAt(day.date, slot.start);
-  const kind = booking ? 'active' : slot.kind;
+  const active = Boolean(booking) && isActive(booking);
+  const kind = active ? 'active' : slot.kind;
   const interactive = kind === 'free' || kind === 'mine' || kind === 'max' || kind === 'active';
   const node = el(interactive ? 'button' : 'div', `cell ${kind}`, CELL_TEXT[kind]);
   if (interactive) {
     node.setAttribute('aria-label', `${describe(day, slot)}, ${CELL_TEXT[kind]}`);
-    node.addEventListener('click', () => (booking ? openBooking(booking) : openSlot(day, slot)));
+    node.addEventListener('click', () => (active ? openBooking(booking) : openSlot(day, slot)));
   }
   return node;
 }
