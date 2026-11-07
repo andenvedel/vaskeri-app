@@ -40,6 +40,7 @@ const DEFAULT_SETTINGS = {
   NOTIFY_NIGHT_DAYS: '2',
   WASH_PAUSE_DAYS: '10',
   NOTIFY_MACHINE_DONE: 'false',
+  NOTIFY_MACHINE_ALMOST_DONE_MINUTES: '0',
   NOTIFY_BOOKING_REMINDER_MINUTES: '0',
   AUTOBOOK_ENABLED: 'false',
   AUTOBOOK_MAX_DAYS_AHEAD: '7',
@@ -865,6 +866,10 @@ function openNotifications() {
     numberField(draft, 'NOTIFY_NIGHT_DAYS', 'Væk mig kun for tider inden for (dage)', 0, 30),
     el('h3', '', 'Min vask'),
     toggleField(draft, 'NOTIFY_MACHINE_DONE', 'Besked når min maskine er færdig'),
+    selectField(draft, 'NOTIFY_MACHINE_ALMOST_DONE_MINUTES', 'Besked med vibration før min maskine er færdig', [
+      ['0', 'Aldrig'], ['1', '1 minut før'], ['2', '2 minutter før'], ['3', '3 minutter før'],
+      ['5', '5 minutter før'], ['10', '10 minutter før'],
+    ]),
     selectField(draft, 'NOTIFY_BOOKING_REMINDER_MINUTES', 'Påmind mig før min tid', [
       ['0', 'Aldrig'], ['15', '15 minutter før'], ['30', '30 minutter før'],
       ['60', '1 time før'], ['120', '2 timer før'], ['1440', '1 dag før'],
@@ -881,7 +886,20 @@ function openAutobook() {
     selectField(draft, 'AUTOBOOK_EARLIEST_START', 'Tidligste start', startOptions('Alle tider')),
     selectField(draft, 'AUTOBOOK_LATEST_START', 'Seneste start', startOptions('Alle tider')),
     numberField(draft, 'AUTOBOOK_KEEP_FREE', 'Lad så mange bookinger stå til mig selv', 0, 10),
-  ]);
+  ], [action('Nulstil autobooking', 'secondary', confirmAutobookReset)]);
+}
+
+function confirmAutobookReset() {
+  sheet(
+    el('h2', '', 'Nulstil autobooking?'),
+    el('p', '', 'Tider du selv har slettet, kan bookes automatisk igen, og loggen under Status ryddes.'),
+    el('p', 'muted', 'Dine indstillinger og bookinger ændres ikke. Passer en ledig tid, kan den blive booket med det samme.'),
+    action('Ja, nulstil', 'danger', async () => {
+      if (!await postCommand('reset-autobook')) toast('Kunne ikke sende til ntfy');
+      openAutobook();
+    }),
+    action('Tilbage', 'secondary', openAutobook),
+  );
 }
 
 function openAppSettings() {
