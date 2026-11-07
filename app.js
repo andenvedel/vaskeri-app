@@ -9,11 +9,45 @@ const RETURN_OK = 100;
 const WEEKDAYS = ['søn', 'man', 'tir', 'ons', 'tor', 'fre', 'lør'];
 // Appen erklærer linktypen evaskeri://. Kun pakkenavnet åbner Google Play i stedet.
 const E_VASKERI_APP = 'intent://open#Intent;scheme=evaskeri;package=dk.nortec.elaundry;end';
-const WASH_PAUSE_DAYS = 10;
 // Serveren opdaterer selv kun hvert par minutter, så oftere giver ingen nye tal.
 const LIVE_MIN_GAP_MS = 2 * 60 * 1000;
-const LIVE_TICK_MS = 30 * 1000;
+const LIVE_TICK_MS = 1000;
+// Telefonen tæller selv sekunderne ned, så maskinen behøver kun at rette uret en gang imellem.
+const LIVE_SYNC_MS = 30 * 1000;
+// Maskinens værdi for "ingen resttid", fx når programmet ikke er startet.
+const NO_REMAINING_TIME = 2147483647;
 const MACHINE_KIND = { Fri: 'free', Optaget: 'busy', Reserveret: 'reserved' };
+// Maskinens egen tekst er afkortet til displayet her ("Centri-").
+const PHASE_TEXT = { Washer_Process_Spin: 'Centrifugering' };
+const MONTHS = [
+  'januar', 'februar', 'marts', 'april', 'maj', 'juni', 'juli',
+  'august', 'september', 'oktober', 'november', 'december',
+];
+const SETTING_WEEKDAYS = ['man', 'tir', 'ons', 'tor', 'fre', 'lør', 'søn'];
+const ALL_WEEKDAYS = SETTING_WEEKDAYS.join(',');
+const SLOT_STARTS = ['07:30', '10:00', '12:30', '15:00', '17:30'];
+// Samme navne og standardværdier som tjekkets .env, så de kan sendes direkte.
+const DEFAULT_SETTINGS = {
+  NOTIFY_ENABLED: 'true',
+  NOTIFY_MAX_DAYS_AHEAD: '21',
+  NOTIFY_URGENT_DAYS: '3',
+  NOTIFY_MIN_LEAD_MINUTES: '30',
+  NOTIFY_WEEKDAYS: ALL_WEEKDAYS,
+  NOTIFY_EARLIEST_START: '',
+  NOTIFY_LATEST_START: '',
+  QUIET_START: '22:00',
+  QUIET_END: '07:00',
+  NOTIFY_NIGHT_DAYS: '2',
+  WASH_PAUSE_DAYS: '10',
+  NOTIFY_MACHINE_DONE: 'false',
+  NOTIFY_BOOKING_REMINDER_MINUTES: '0',
+  AUTOBOOK_ENABLED: 'false',
+  AUTOBOOK_MAX_DAYS_AHEAD: '7',
+  AUTOBOOK_WEEKDAYS: ALL_WEEKDAYS,
+  AUTOBOOK_EARLIEST_START: '',
+  AUTOBOOK_LATEST_START: '',
+  AUTOBOOK_KEEP_FREE: '1',
+};
 
 const $ = (id) => document.getElementById(id);
 const saved = JSON.parse(localStorage.getItem('vaskeri') || '{}');
@@ -21,12 +55,15 @@ const save = () => localStorage.setItem('vaskeri', JSON.stringify(saved));
 
 let view = { days: [], remaining: 0, place: '' };
 let daysShown = 31;
-let calendarId = HOME_CALENDAR_ID;
+let calendarId = saved.startLaundry || HOME_CALENDAR_ID;
 let loading = false;
 let refreshAgain = false;
 let balance = null;
+let bookings = [];
+let running = new Set();
 let live = null;
 let liveFetched = 0;
+let liveSynced = 0;
 
 class LoginRejected extends Error {}
 
@@ -124,8 +161,53 @@ async function loadLaundries() {
   save();
 }
 
-// Saldoen er rar at have, men må aldrig forhindre kalenderen i at blive vist.
-async function loadBalance() {
+// Svaret har dag og måned, men intet år. En dato der er passeret, må høre til næste år.
+function bookingDate(day, month) {
+  const now = new Date();
+  const index = MONTHS.indexOf(String(month).toLowerCase());
+  if (index < 0) return null;
+  const date = new Date(now.getFullYear(), index, day);
+  if (isoDate(date) < isoDate(now)) date.setFullYear(now.getFullYear() + 1);
+  return isoDate(date);
+}
+
+const shortMachine = (text) => text.replace('Vaskemaskine', 'Vask').replace('Tørretumbler', 'Tørre');
+
+function machineList(names) {
+  if (names.length === 1) return shortMachine(names[0]);
+  const prefix = /^\D*/.exec(shortMachine(names[0]))[0];
+  return prefix + names.map((name) => name.replace(/^\D*/, '')).join(', ');
+}
+
+// Book.Session sletter tiden, hvis det sendes, så det læses aldrig. En tid i gang står
+// her med én række pr. maskine, så de samles til én booking.
+function parseBookings(sections) {
+  const merged = new Map();
+  for (const section of sections) {
+    for (const { Book: book } of section.Rows || []) {
+      const infos = book?.Infos || [];
+      const time = /(\d\d:\d\d) - (\d\d:\d\d)/.exec(infos.join(' '));
+      const date = book && bookingDate(book.Day, book.Month);
+      if (!time || !date) continue;
+      const place = section.Description?.[0] || '';
+      const key = `${place}|${date}|${time[1]}`;
+      if (!merged.has(key)) merged.set(key, { place, date, start: time[1], end: time[2], names: [] });
+      merged.get(key).names.push(...infos.filter((info) => !info.startsWith('kl.')));
+    }
+  }
+  return [...merged.values()]
+    .map(({ names, ...booking }) => ({ ...booking, machines: machineList(names) }))
+    .sort((a, b) => `${a.date}${a.start}`.localeCompare(`${b.date}${b.start}`));
+}
+
+function parseRunning(sections) {
+  return new Set(sections.filter((section) => section.Name === 'Live4').flatMap((section) => (
+    section.Rows.flatMap((row) => row.Units || []).map((unit) => `${section.Description?.[0]}|${unit.Text}`)
+  )));
+}
+
+// Forsiden er rar at have, men må aldrig forhindre kalenderen i at blive vist.
+async function loadHome() {
   try {
     const data = await api('User/Home3', { session: saved.session, locationid: '' });
     if (data.Return !== RETURN_OK) return;
@@ -133,9 +215,57 @@ async function loadBalance() {
     save();
     const section = data.Sections.find((s) => s.Name === 'Saldo');
     balance = section?.Rows[0]?.Columns2?.Cells[1] || null;
+    bookings = parseBookings(data.Sections);
+    running = parseRunning(data.Sections);
   } catch {
     balance = null;
   }
+}
+
+function isActive(booking) {
+  const now = new Date();
+  const time = clock(now.getHours() * 60 + now.getMinutes());
+  return booking.date === isoDate(now) && booking.start <= time && time < booking.end;
+}
+
+const bookingAt = (date, start) => bookings.find((booking) => (
+  booking.place === view.place && booking.date === date && booking.start === start
+));
+
+function bookingRow(booking) {
+  const active = isActive(booking);
+  const today = booking.date === isoDate(new Date());
+  const date = localDate(booking.date);
+  const row = el('button', active ? 'booking active' : 'booking');
+  const when = today ? 'i dag' : `${WEEKDAYS[date.getDay()]} ${shortDate(booking.date)}`;
+  const where = booking.place === view.place ? booking.machines : `${booking.place} · ${booking.machines}`;
+  row.append(el('strong', '', when), el('span', '', `${booking.start}–${booking.end}`), el('span', 'where', where));
+  if (active) row.append(el('span', 'badge', 'I gang'));
+  row.addEventListener('click', () => openBooking(booking));
+  return row;
+}
+
+function renderBookings() {
+  const box = $('bookings');
+  // En gemt index.html fra før bookinglisten kan møde en nyere app.js.
+  if (!box) return;
+  box.hidden = !bookings.length;
+  $('bookingList').replaceChildren(...bookings.map(bookingRow));
+}
+
+function openBooking(booking) {
+  const day = view.days.find((d) => d.date === booking.date);
+  const slot = booking.place === view.place ? day?.slots.find((s) => s.start === booking.start) : null;
+  // Kun kalenderens eget token må slette, og kun mens tiden stadig står som din der.
+  if (slot?.kind === 'mine') return openSlot(day, slot);
+  const active = isActive(booking);
+  sheet(
+    el('h2', '', `${booking.date === isoDate(new Date()) ? 'I dag' : shortDate(booking.date)} ${booking.start}–${booking.end}`),
+    el('p', '', booking.place),
+    el('p', '', booking.machines),
+    el('p', 'muted', active ? `Tiden er i gang og slutter ${booking.end}.` : 'Tiden kan slettes fra kalenderen for dette vaskeri.'),
+    closeButton(),
+  );
 }
 
 function remainingMinutes(process) {
@@ -155,11 +285,53 @@ function parseLive(data) {
     units: section.Rows.flatMap((row) => row.Units || []).map((unit) => {
       const minutes = remainingMinutes(unit.Process);
       return {
-        text: unit.Text, status: unit.Status || '',
-        endsAt: minutes === null ? null : now + minutes * 60000,
+        text: unit.Text, status: unit.Status || '', ref: unit.SVG || null,
+        endsAt: minutes === null ? null : now + minutes * 60000, exact: false,
       };
     }),
   }));
+}
+
+const unescapeJs = (text) => text
+  .replace(/\\u([0-9a-f]{4})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+  .replace(/\\(.)/g, '$1');
+
+function displayText(script, id) {
+  const match = new RegExp(`getElementById\\('${id}\\w+'\\)\\.childNodes\\[0\\]\\.nodeValue='((?:[^'\\\\]|\\\\.)*)'`).exec(script);
+  return match ? unescapeJs(match[1]).replace(/"/g, '').trim() : '';
+}
+
+// Svaret er JavaScript beregnet til at blive kørt i maskinens SVG. Her læses det kun som tekst.
+function parseMachineState(script) {
+  const seconds = Number(/\bB\w+=(-?\d+);/.exec(script)?.[1] ?? NaN);
+  if (Number.isNaN(seconds)) return null;
+  const process = /\bI\w+='(\w*)'/.exec(script)?.[1];
+  return {
+    seconds: seconds > 0 && seconds < NO_REMAINING_TIME ? seconds : null,
+    program: displayText(script, 'P'),
+    phase: PHASE_TEXT[process] || displayText(script, 'C'),
+    percent: /p>(\d+)/.exec(script)?.[1] ?? null,
+  };
+}
+
+async function syncMachine(unit) {
+  try {
+    const [folder, token] = unit.ref.split('/');
+    const response = await fetch(`${API}/download/${folder}/Ajax.ashx?${token}`, { cache: 'no-store' });
+    const state = parseMachineState(await response.text());
+    if (!state) return;
+    const { seconds, ...details } = state;
+    Object.assign(unit, details);
+    if (seconds !== null) Object.assign(unit, { endsAt: Date.now() + seconds * 1000, exact: true });
+  } catch {
+    // Så viser maskinen bare hele minutter fra den almindelige status.
+  }
+}
+
+async function syncMachines(sections = live) {
+  liveSynced = Date.now();
+  const units = liveSection(sections)?.units || [];
+  await Promise.all(units.filter((unit) => unit.ref && MACHINE_KIND[unit.status] === 'busy').map(syncMachine));
 }
 
 // Ét kald dækker alle vaskerier, så skift af vaskeri koster ingen ekstra kald.
@@ -173,27 +345,49 @@ async function loadLive() {
       saved.session = data.Session;
       save();
     }
-    live = parseLive(data);
+    const sections = parseLive(data);
+    await syncMachines(sections);
+    live = sections;
     renderLive();
   } catch {
     // Maskinstatus er rar at have, men må aldrig forstyrre kalenderen.
   }
 }
 
-const liveSection = () => live?.find((section) => section.title === view.place)
-  || live?.find((section) => section.name === `LiveL${calendarId}`);
+const liveSection = (sections = live) => sections?.find((section) => section.title === view.place)
+  || sections?.find((section) => section.name === `LiveL${calendarId}`);
 
-function machine(unit) {
-  const minutes = unit.endsAt === null ? null : Math.max(0, Math.ceil((unit.endsAt - Date.now()) / 60000));
-  const type = /tørre/i.test(unit.text) ? 'dryer' : 'washer';
-  const node = el('div', `machine ${type} ${MACHINE_KIND[unit.status] || 'other'}`);
-  node.setAttribute('role', 'img');
-  node.setAttribute('aria-label', `${unit.text}: ${unit.status}${minutes === null ? '' : `, ${minutes} minutter tilbage`}`);
-  node.append(
-    el('span', 'door', String(minutes ?? unit.status.slice(0, 3))),
-    el('span', 'name', unit.text.replace('Vaskemaskine', 'Vask').replace('Tørretumbler', 'Tørre')),
-  );
+const secondsLeft = (unit) => (unit.endsAt === null ? null : Math.max(0, Math.ceil((unit.endsAt - Date.now()) / 1000)));
+const isMine = (section, unit) => running.has(`${section.title}|${unit.text}`);
+
+function door(unit) {
+  const node = el('span', 'door');
+  const seconds = secondsLeft(unit);
+  if (seconds === null) node.textContent = unit.status.slice(0, 3);
+  else if (!unit.exact) node.textContent = String(Math.ceil(seconds / 60));
+  else node.append(el('span', '', String(Math.floor(seconds / 60))), el('small', '', `:${pad(seconds % 60)}`));
   return node;
+}
+
+function machine(section, unit) {
+  const seconds = secondsLeft(unit);
+  const type = /tørre/i.test(unit.text) ? 'dryer' : 'washer';
+  const owner = isMine(section, unit) ? ' mine' : '';
+  const node = el('div', `machine ${type} ${MACHINE_KIND[unit.status] || 'other'}${owner}`);
+  const left = seconds === null ? '' : `, ${Math.ceil(seconds / 60)} minutter tilbage`;
+  node.setAttribute('role', 'img');
+  node.setAttribute('aria-label', `${unit.text}${owner ? ' (din)' : ''}: ${unit.status}${left}`);
+  node.append(door(unit), el('span', 'name', shortMachine(unit.text)));
+  return node;
+}
+
+function machineDetail(unit) {
+  const end = new Date(unit.endsAt);
+  const parts = [
+    unit.program, unit.phase, unit.percent && `${unit.percent} %`,
+    unit.endsAt !== null && `færdig ${clock(end.getHours() * 60 + end.getMinutes())}`,
+  ];
+  return el('p', 'detail', `${shortMachine(unit.text)}: ${parts.filter(Boolean).join(' · ')}`);
 }
 
 function renderLive() {
@@ -203,7 +397,10 @@ function renderLive() {
   const section = liveSection();
   box.hidden = !section?.units.length;
   if (box.hidden) return;
-  $('liveUnits').replaceChildren(...section.units.map(machine));
+  $('liveUnits').replaceChildren(...section.units.map((unit) => machine(section, unit)));
+  $('liveDetails')?.replaceChildren(...section.units
+    .filter((unit) => isMine(section, unit) && MACHINE_KIND[unit.status] === 'busy')
+    .map(machineDetail));
   $('liveUpdated').textContent = section.updated;
 }
 
@@ -213,6 +410,7 @@ function tickLive() {
   renderLive();
   const finished = liveSection()?.units.some((unit) => unit.endsAt !== null && unit.endsAt <= Date.now());
   if (finished && !loading && !$('sheet').open) loadLive();
+  if (Date.now() - liveSynced >= LIVE_SYNC_MS) syncMachines().then(renderLive);
 }
 
 function renderLaundries() {
@@ -230,6 +428,7 @@ function switchLaundry(id) {
   view = { days: [], remaining: 0, place: '' };
   $('calendar').replaceChildren();
   $('status').textContent = '';
+  liveSynced = 0;
   renderLive();
   refresh();
 }
@@ -247,7 +446,11 @@ async function refresh() {
     await loadLaundries();
     renderLaundries();
     syncPause();
-    loadBalance().then(renderStatus).then(loadLive);
+    loadHome().then(() => {
+      // En tid i gang kendes kun fra forsiden, så kalenderen må tegnes igen for at vise den.
+      if (bookings.some(isActive)) render();
+      else { renderStatus(); renderBookings(); }
+    }).then(loadLive);
   } catch (error) {
     if (error instanceof LoginRejected) return showLogin('Login blev afvist. Tjek dit password.');
     toast(error.message);
@@ -271,6 +474,7 @@ function render() {
   calendar.replaceChildren();
   renderLaundries();
   renderPause();
+  renderBookings();
   renderLive();
   if (!view.days.length) return;
   renderStatus();
@@ -310,14 +514,17 @@ function el(tag, className = '', text = '') {
   return node;
 }
 
-const CELL_TEXT = { free: 'Fri', mine: 'Min tur', max: 'Maks', taken: '–', past: '' };
+const CELL_TEXT = { free: 'Fri', mine: 'Min tur', max: 'Maks', taken: '–', past: '', active: 'I gang' };
 
 function cell(day, slot) {
-  const interactive = slot.kind === 'free' || slot.kind === 'mine' || slot.kind === 'max';
-  const node = el(interactive ? 'button' : 'div', `cell ${slot.kind}`, CELL_TEXT[slot.kind]);
+  // Kalenderen viser en tid i gang som passeret. Kun forsiden ved, at den er din.
+  const booking = slot.kind === 'mine' ? null : bookingAt(day.date, slot.start);
+  const kind = booking ? 'active' : slot.kind;
+  const interactive = kind === 'free' || kind === 'mine' || kind === 'max' || kind === 'active';
+  const node = el(interactive ? 'button' : 'div', `cell ${kind}`, CELL_TEXT[kind]);
   if (interactive) {
-    node.setAttribute('aria-label', `${describe(day, slot)}, ${CELL_TEXT[slot.kind]}`);
-    node.addEventListener('click', () => openSlot(day, slot));
+    node.setAttribute('aria-label', `${describe(day, slot)}, ${CELL_TEXT[kind]}`);
+    node.addEventListener('click', () => (booking ? openBooking(booking) : openSlot(day, slot)));
   }
   return node;
 }
@@ -340,7 +547,8 @@ function flashHash() {
 
 function sheet(...nodes) {
   $('sheetBody').replaceChildren(...nodes);
-  $('sheet').showModal();
+  if (!$('sheet').open) $('sheet').showModal();
+  $('sheet').scrollTop = 0;
 }
 
 function action(text, className, onClick) {
@@ -457,15 +665,21 @@ function renderPause() {
 }
 
 const controlUrl = () => `${NTFY}/${encodeURIComponent(saved.topic)}-styring`;
+const settings = () => ({ ...DEFAULT_SETTINGS, ...saved.settings });
+const washPauseDays = () => Number(settings().WASH_PAUSE_DAYS);
+
+async function postCommand(command) {
+  try {
+    const response = await fetch(controlUrl(), { method: 'POST', body: command });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
 
 async function sendCommand(command, until) {
   $('sheet').close();
-  try {
-    const response = await fetch(controlUrl(), { method: 'POST', body: command });
-    if (!response.ok) throw new Error();
-  } catch {
-    return toast('Kunne ikke sende til ntfy');
-  }
+  if (!await postCommand(command)) return toast('Kunne ikke sende til ntfy');
   saved.pauseUntil = until;
   save();
   render();
@@ -483,7 +697,7 @@ function openPause() {
   const nodes = [
     el('h2', '', 'Pause for afbud'),
     el('p', 'muted', 'Skjuler tider i den valgte periode. Senere afbud giver stadig besked.'),
-    action(`Har vasket (${WASH_PAUSE_DAYS} dage)`, 'primary', () => pauseDays(WASH_PAUSE_DAYS)),
+    action(`Har vasket (${washPauseDays()} dage)`, 'primary', () => pauseDays(washPauseDays())),
     action('3 dage', 'secondary', () => pauseDays(3)),
     action('7 dage', 'secondary', () => pauseDays(7)),
     action('14 dage', 'secondary', () => pauseDays(14)),
@@ -504,7 +718,7 @@ async function syncPause() {
       if (message.event !== 'message') continue;
       const sent = new Date(message.time * 1000);
       const [word, days] = (message.message || '').trim().toLowerCase().split(/\s+/);
-      if (word === 'washed') saved.pauseUntil = isoDate(addDays(sent, WASH_PAUSE_DAYS));
+      if (word === 'washed') saved.pauseUntil = isoDate(addDays(sent, washPauseDays()));
       else if (word === 'pause' && /^\d+$/.test(days || '')) saved.pauseUntil = isoDate(addDays(sent, Number(days)));
       else if (word === 'resume') saved.pauseUntil = null;
     }
@@ -516,25 +730,194 @@ async function syncPause() {
   }
 }
 
-function openMenu() {
+function field(text, input) {
+  const label = el('label', '', text);
+  label.append(input);
+  return label;
+}
+
+function numberField(draft, key, text, min, max) {
+  const input = el('input');
+  Object.assign(input, { type: 'number', inputMode: 'numeric', required: true, min, max, value: draft[key] });
+  input.addEventListener('input', () => { draft[key] = input.value; });
+  return field(text, input);
+}
+
+function timeField(draft, key, text) {
+  const input = el('input');
+  Object.assign(input, { type: 'time', required: true, value: draft[key] });
+  input.addEventListener('input', () => { draft[key] = input.value; });
+  return field(text, input);
+}
+
+function selectField(draft, key, text, options) {
+  const select = el('select');
+  select.append(...options.map(([value, name]) => {
+    const option = el('option', '', name);
+    option.value = value;
+    option.selected = value === draft[key];
+    return option;
+  }));
+  select.addEventListener('change', () => { draft[key] = select.value; });
+  return field(text, select);
+}
+
+function toggleField(draft, key, text) {
+  const input = el('input');
+  Object.assign(input, { type: 'checkbox', checked: draft[key] === 'true' });
+  input.addEventListener('change', () => { draft[key] = String(input.checked); });
+  const label = el('label', 'toggle', text);
+  label.append(input);
+  return label;
+}
+
+function weekdayField(draft, key, text) {
+  const chosen = new Set(draft[key].split(',').filter(Boolean));
+  const days = el('div', 'weekdays');
+  days.append(...SETTING_WEEKDAYS.map((name) => {
+    const button = el('button', 'weekday', name);
+    button.type = 'button';
+    button.setAttribute('aria-pressed', String(chosen.has(name)));
+    button.addEventListener('click', () => {
+      if (chosen.has(name)) chosen.delete(name);
+      else chosen.add(name);
+      button.setAttribute('aria-pressed', String(chosen.has(name)));
+      draft[key] = SETTING_WEEKDAYS.filter((day) => chosen.has(day)).join(',');
+    });
+    return button;
+  }));
+  const group = el('div', 'group');
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', text);
+  group.append(el('span', 'muted', text), days);
+  return group;
+}
+
+function startOptions(anyText) {
+  const starts = view.days[0]?.slots.map((slot) => slot.start) || SLOT_STARTS;
+  return [['', anyText], ...starts.map((start) => [start, start])];
+}
+
+function settingsProblem(draft) {
+  if (!saved.topic) return 'Indtast dit ntfy-emne under App først.';
+  if (!draft.NOTIFY_WEEKDAYS || !draft.AUTOBOOK_WEEKDAYS) return 'Vælg mindst én ugedag.';
+  for (const prefix of ['NOTIFY', 'AUTOBOOK']) {
+    const earliest = draft[`${prefix}_EARLIEST_START`];
+    const latest = draft[`${prefix}_LATEST_START`];
+    if (earliest && latest && earliest > latest) return 'Tidligste start ligger efter seneste start.';
+  }
+  return null;
+}
+
+async function saveSettings(draft, button, message) {
+  const inputs = [...$('sheetBody').querySelectorAll('input')];
+  if (!inputs.every((input) => input.reportValidity())) return;
+  message.textContent = settingsProblem(draft) || '';
+  if (message.textContent) return;
+  button.disabled = true;
+  const sent = await postCommand(`settings ${JSON.stringify(draft)}`);
+  button.disabled = false;
+  if (!sent) {
+    message.textContent = 'Kunne ikke sende til ntfy.';
+    return;
+  }
+  saved.settings = draft;
+  save();
+  $('sheet').close();
+  toast('Sendt. Du får besked, når tjekket har dem.');
+}
+
+function settingsSheet(title, intro, draft, fields, extra = []) {
+  const message = el('p', 'error');
+  message.setAttribute('role', 'alert');
+  const saveButton = action('Gem', 'primary', () => saveSettings(draft, saveButton, message));
+  sheet(
+    el('h2', '', title), el('p', 'muted', intro), ...fields, message,
+    saveButton, ...extra, action('Tilbage', 'secondary', openMenu),
+  );
+}
+
+function sendTest(button) {
+  button.disabled = true;
+  postCommand('test').then((sent) => {
+    button.textContent = sent ? 'Sendt. Besked inden for 2 minutter.' : 'Kunne ikke sende til ntfy';
+  });
+}
+
+function openNotifications() {
+  const draft = settings();
+  const test = action('Send testbesked gennem tjekket', 'secondary', () => sendTest(test));
+  test.disabled = !saved.topic;
+  settingsSheet('Notifikationer', 'Gemmes på serveren og gælder fra næste tjek, højst 2 minutter efter.', draft, [
+    el('h3', '', 'Afbud'),
+    toggleField(draft, 'NOTIFY_ENABLED', 'Besked om afbud'),
+    numberField(draft, 'NOTIFY_MAX_DAYS_AHEAD', 'Op til så mange dage frem', 1, 30),
+    weekdayField(draft, 'NOTIFY_WEEKDAYS', 'Ugedage'),
+    selectField(draft, 'NOTIFY_EARLIEST_START', 'Tidligste start', startOptions('Alle tider')),
+    selectField(draft, 'NOTIFY_LATEST_START', 'Seneste start', startOptions('Alle tider')),
+    numberField(draft, 'NOTIFY_MIN_LEAD_MINUTES', 'Ignorér tider der starter om under (minutter)', 0, 720),
+    numberField(draft, 'NOTIFY_URGENT_DAYS', 'Høj prioritet inden for (dage)', 0, 30),
+    numberField(draft, 'WASH_PAUSE_DAYS', 'Dage på pause efter "Har vasket"', 1, 30),
+    el('h3', '', 'Stille tid'),
+    timeField(draft, 'QUIET_START', 'Fra'),
+    timeField(draft, 'QUIET_END', 'Til'),
+    numberField(draft, 'NOTIFY_NIGHT_DAYS', 'Væk mig kun for tider inden for (dage)', 0, 30),
+    el('h3', '', 'Min vask'),
+    toggleField(draft, 'NOTIFY_MACHINE_DONE', 'Besked når min maskine er færdig'),
+    selectField(draft, 'NOTIFY_BOOKING_REMINDER_MINUTES', 'Påmind mig før min tid', [
+      ['0', 'Aldrig'], ['15', '15 minutter før'], ['30', '30 minutter før'],
+      ['60', '1 time før'], ['120', '2 timer før'], ['1440', '1 dag før'],
+    ]),
+  ], [test]);
+}
+
+function openAutobook() {
+  const draft = settings();
+  settingsSheet('Autobooking', 'Booker selv et afbud, der passer herunder, og giver besked bagefter. Højst én tid pr. tjek.', draft, [
+    toggleField(draft, 'AUTOBOOK_ENABLED', 'Book afbud automatisk'),
+    numberField(draft, 'AUTOBOOK_MAX_DAYS_AHEAD', 'Op til så mange dage frem', 1, 30),
+    weekdayField(draft, 'AUTOBOOK_WEEKDAYS', 'Ugedage'),
+    selectField(draft, 'AUTOBOOK_EARLIEST_START', 'Tidligste start', startOptions('Alle tider')),
+    selectField(draft, 'AUTOBOOK_LATEST_START', 'Seneste start', startOptions('Alle tider')),
+    numberField(draft, 'AUTOBOOK_KEEP_FREE', 'Lad så mange bookinger stå til mig selv', 0, 10),
+  ]);
+}
+
+function openAppSettings() {
   const topic = el('input');
   topic.value = saved.topic || '';
   topic.autocapitalize = 'off';
   topic.spellcheck = false;
-  const label = el('label', '', 'ntfy-emne');
-  label.append(topic);
+  const draft = { start: String(saved.startLaundry || HOME_CALENDAR_ID) };
+  const laundries = saved.laundries?.length ? saved.laundries : [{ id: calendarId, title: view.place }];
   sheet(
-    el('h2', '', 'Indstillinger'),
-    label,
+    el('h2', '', 'App'),
+    field('ntfy-emne', topic),
+    selectField(draft, 'start', 'Åbn på vaskeri', laundries.map(({ id, title }) => [String(id), title])),
     action('Gem', 'primary', () => {
       saved.topic = topic.value.trim();
+      saved.startLaundry = Number(draft.start);
       save();
       $('sheet').close();
       syncPause();
     }),
+    action('Tilbage', 'secondary', openMenu),
+  );
+}
+
+function openMenu() {
+  const current = settings();
+  const autobook = current.AUTOBOOK_ENABLED === 'true' ? 'Til' : 'Fra';
+  const notify = current.NOTIFY_ENABLED === 'true' ? 'Til' : 'Fra';
+  sheet(
+    el('h2', '', 'Indstillinger'),
+    action(`Notifikationer · ${notify}`, 'secondary', openNotifications),
+    action(`Autobooking · ${autobook}`, 'secondary', openAutobook),
+    action('App', 'secondary', openAppSettings),
     appLink(),
     action('Log ud', 'secondary', () => {
-      localStorage.removeItem('vaskeri');
+      // Tjekket kører videre med indstillingerne, så appen skal stadig kende dem.
+      localStorage.setItem('vaskeri', JSON.stringify({ settings: saved.settings }));
       location.reload();
     }),
     closeButton(),

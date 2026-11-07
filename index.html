@@ -19,7 +19,7 @@
   <form id="loginForm">
     <label>Mobilnr. eller e-mail <input id="user" autocomplete="username" required></label>
     <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
-    <label>ntfy-emne (valgfrit, til pause) <input id="topicLogin" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <label>ntfy-emne (valgfrit, til pause og indstillinger) <input id="topicLogin" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
     <p id="loginError" class="error" role="alert" hidden></p>
     <button class="primary" id="loginButton">Log ind</button>
   </form>
@@ -35,8 +35,13 @@
     <button id="menu" class="ghost" aria-label="Indstillinger">☰</button>
   </header>
   <button id="pauseChip" class="chip">Sæt notifikationer på pause</button>
+  <section id="bookings" aria-label="Mine bookinger" hidden>
+    <h2>Mine bookinger</h2>
+    <div id="bookingList"></div>
+  </section>
   <section id="live" aria-label="Maskiner" hidden>
     <div id="liveUnits"></div>
+    <div id="liveDetails"></div>
     <p id="liveUpdated" class="muted"></p>
   </section>
   <div id="calendar" aria-live="polite"></div>

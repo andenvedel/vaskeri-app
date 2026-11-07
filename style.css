@@ -63,6 +63,7 @@ input {
 .machine.free { --state: var(--free); }
 .machine.busy { --state: var(--busy); }
 .machine.reserved, .machine.other { --state: var(--taken-text); }
+.machine.mine { border-color: var(--mine); border-top-color: var(--state); box-shadow: 0 0 0 1px var(--mine); }
 #live { padding: 10px 12px 0; }
 #liveUnits { display: grid; grid-template-columns: repeat(auto-fit, minmax(56px, 1fr)); gap: 6px; }
 #liveUpdated { font-size: .72rem; text-align: right; margin-top: 4px; }
@@ -71,11 +72,29 @@ input {
   border: 1px solid var(--line); border-top: 4px solid var(--state); border-radius: 8px;
 }
 .door {
-  display: grid; place-items: center; width: 38px; height: 38px; border: 3px solid var(--state);
-  border-radius: 50%; color: var(--state); font-size: .82rem; font-weight: 700; font-variant-numeric: tabular-nums;
+  display: flex; align-items: baseline; justify-content: center; width: 50px; height: 50px; padding-top: 13px;
+  border: 3px solid var(--state); border-radius: 50%; color: var(--state);
+  font-size: .95rem; line-height: 1.2; font-weight: 700; font-variant-numeric: tabular-nums;
 }
+.door small { font-size: .62rem; font-weight: 600; }
 .dryer .door { border-radius: 30%; }
 .machine .name { font-size: .68rem; color: var(--muted); white-space: nowrap; }
+
+#liveDetails:not(:empty) { display: grid; gap: 2px; margin-top: 6px; }
+.detail { font-size: .8rem; }
+
+#bookings { padding: 12px 12px 0; }
+#bookings h2 { font-size: .8rem; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
+#bookingList { display: grid; gap: 4px; }
+.booking {
+  display: flex; gap: 8px; align-items: center; justify-content: flex-start; width: 100%; min-height: 44px;
+  padding: 0 12px; background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  border-radius: 10px; font-size: .9rem; font-variant-numeric: tabular-nums; text-align: left;
+}
+.booking .where { flex: 1; min-width: 0; color: var(--muted); font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.booking.active { background: var(--mine); color: var(--mine-text); border-color: var(--mine); }
+.booking.active .where { color: inherit; }
+.badge { font-size: .75rem; font-weight: 700; }
 
 #calendar { padding: 0 12px; }
 .row { display: grid; grid-template-columns: 52px repeat(5, 1fr); gap: 4px; margin-bottom: 4px; align-items: stretch; }
@@ -93,7 +112,7 @@ input {
   display: flex; align-items: center; justify-content: center; background: var(--taken); color: var(--taken-text);
 }
 .cell.free { background: var(--free); color: var(--free-text); font-weight: 600; }
-.cell.mine { background: var(--mine); color: var(--mine-text); font-weight: 600; }
+.cell.mine, .cell.active { background: var(--mine); color: var(--mine-text); font-weight: 600; }
 .cell.max { background: none; border: 1.5px dashed var(--free); color: var(--text); }
 .cell.past { background: none; }
 .flash { animation: flash 2.4s ease-out; border-radius: 8px; }
@@ -102,11 +121,24 @@ input {
 
 dialog {
   border: 0; padding: 20px 20px calc(20px + env(safe-area-inset-bottom)); margin: auto 0 0; width: 100%; max-width: 100%;
+  max-height: 90dvh; overflow-y: auto;
   background: var(--panel); color: var(--text); border-radius: 18px 18px 0 0;
 }
 dialog::backdrop { background: rgb(0 0 0 / .45); }
 #sheetBody { display: grid; gap: 10px; max-width: 480px; margin: 0 auto; }
 #sheetBody h2 { font-size: 1.25rem; margin: 0; }
+#sheetBody h3 { font-size: .95rem; margin: 10px 0 0; }
+#sheetBody .error:empty { display: none; }
+#sheetBody select {
+  font: inherit; color: var(--text); background: var(--panel); min-height: 48px; width: 100%;
+  border: 1px solid var(--line); border-radius: 10px; padding: 0 8px;
+}
+.toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; font-size: 1rem; color: var(--text); }
+.toggle input { width: 24px; min-height: 24px; height: 24px; flex: none; accent-color: var(--accent); }
+.group { display: grid; gap: 4px; }
+.weekdays { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.weekday { min-height: 44px; padding: 0; background: var(--taken); color: var(--text); font-size: .85rem; border-radius: 8px; }
+.weekday[aria-pressed="true"] { background: var(--accent); color: var(--panel); font-weight: 600; }
 #toast {
   position: fixed; left: 16px; right: 16px; bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 10;
   background: var(--text); color: var(--bg); padding: 12px 16px; border-radius: 12px; text-align: center;
