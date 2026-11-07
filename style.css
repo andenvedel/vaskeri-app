@@ -62,6 +62,7 @@ input {
 
 .machine.free { --state: var(--free); }
 .machine.busy { --state: var(--busy); }
+.machine.done { --state: var(--mine); }
 .machine.reserved, .machine.other { --state: var(--taken-text); }
 .machine.mine { border-color: var(--mine); border-top-color: var(--state); box-shadow: 0 0 0 1px var(--mine); }
 #live { padding: 10px 12px 0; }

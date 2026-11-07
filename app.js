@@ -16,7 +16,7 @@ const LIVE_TICK_MS = 1000;
 const LIVE_SYNC_MS = 30 * 1000;
 // Maskinens værdi for "ingen resttid", fx når programmet ikke er startet.
 const NO_REMAINING_TIME = 2147483647;
-const MACHINE_KIND = { Fri: 'free', Optaget: 'busy', Reserveret: 'reserved' };
+const MACHINE_KIND = { Fri: 'free', Optaget: 'busy', Reserveret: 'reserved', Færdig: 'done' };
 // Maskinens egen tekst er afkortet til displayet her ("Centri-").
 const PHASE_TEXT = { Washer_Process_Spin: 'Centrifugering' };
 const MONTHS = [
@@ -308,6 +308,7 @@ function parseMachineState(script) {
   const process = /\bI\w+='(\w*)'/.exec(script)?.[1];
   return {
     seconds: seconds > 0 && seconds < NO_REMAINING_TIME ? seconds : null,
+    done: process === 'Washer_Process_Done',
     program: displayText(script, 'P'),
     phase: PHASE_TEXT[process] || displayText(script, 'C'),
     percent: /p>(\d+)/.exec(script)?.[1] ?? null,
@@ -320,8 +321,10 @@ async function syncMachine(unit) {
     const response = await fetch(`${API}/download/${folder}/Ajax.ashx?${token}`, { cache: 'no-store' });
     const state = parseMachineState(await response.text());
     if (!state) return;
-    const { seconds, ...details } = state;
+    const { seconds, done, ...details } = state;
     Object.assign(unit, details);
+    // Maskinen ved det med det samme. Den almindelige status følger først et par minutter efter.
+    if (done) Object.assign(unit, { status: 'Færdig', endsAt: null, exact: false });
     if (seconds !== null) Object.assign(unit, { endsAt: Date.now() + seconds * 1000, exact: true });
   } catch {
     // Så viser maskinen bare hele minutter fra den almindelige status.
@@ -363,7 +366,7 @@ const isMine = (section, unit) => running.has(`${section.title}|${unit.text}`);
 function door(unit) {
   const node = el('span', 'door');
   const seconds = secondsLeft(unit);
-  if (seconds === null) node.textContent = unit.status.slice(0, 3);
+  if (seconds === null) node.textContent = unit.status === 'Færdig' ? 'Klar' : unit.status.slice(0, 3);
   else if (!unit.exact) node.textContent = String(Math.ceil(seconds / 60));
   else node.append(el('span', '', String(Math.floor(seconds / 60))), el('small', '', `:${pad(seconds % 60)}`));
   return node;
