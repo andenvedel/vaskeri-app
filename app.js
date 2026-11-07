@@ -875,7 +875,7 @@ function openNotifications() {
 
 function openAutobook() {
   const draft = settings();
-  settingsSheet('Autobooking', 'Booker selv et afbud, der passer herunder, og giver besked bagefter. Højst én tid pr. tjek.', draft, [
+  settingsSheet('Autobooking', 'Booker selv enhver ledig tid, der passer herunder, og giver besked bagefter. Højst én tid pr. tjek. Tider du selv sletter, bookes ikke igen.', draft, [
     toggleField(draft, 'AUTOBOOK_ENABLED', 'Book afbud automatisk'),
     numberField(draft, 'AUTOBOOK_MAX_DAYS_AHEAD', 'Op til så mange dage frem', 1, 30),
     weekdayField(draft, 'AUTOBOOK_WEEKDAYS', 'Ugedage'),
