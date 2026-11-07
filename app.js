@@ -826,7 +826,6 @@ async function saveSettings(draft, button, message) {
   saved.settings = draft;
   save();
   $('sheet').close();
-  toast('Gemt. Gælder fra næste tjek, højst 2 minutter efter.');
 }
 
 function settingsSheet(title, intro, draft, fields, extra = []) {
@@ -834,7 +833,7 @@ function settingsSheet(title, intro, draft, fields, extra = []) {
   message.setAttribute('role', 'alert');
   const saveButton = action('Gem', 'primary', () => saveSettings(draft, saveButton, message));
   sheet(
-    el('h2', '', title), el('p', 'muted', intro), ...fields, message,
+    el('h2', '', title), ...(intro ? [el('p', 'muted', intro)] : []), ...fields, message,
     saveButton, ...extra, action('Tilbage', 'secondary', openMenu),
   );
 }
@@ -842,7 +841,7 @@ function settingsSheet(title, intro, draft, fields, extra = []) {
 function sendTest(button) {
   button.disabled = true;
   postCommand('test').then((sent) => {
-    button.textContent = sent ? 'Sendt. Besked inden for 2 minutter.' : 'Kunne ikke sende til ntfy';
+    button.textContent = sent ? 'Sendt' : 'Kunne ikke sende til ntfy';
   });
 }
 
@@ -850,7 +849,7 @@ function openNotifications() {
   const draft = settings();
   const test = action('Send testbesked gennem tjekket', 'secondary', () => sendTest(test));
   test.disabled = !saved.topic;
-  settingsSheet('Notifikationer', 'Gemmes på serveren og gælder fra næste tjek, højst 2 minutter efter.', draft, [
+  settingsSheet('Notifikationer', '', draft, [
     el('h3', '', 'Afbud'),
     toggleField(draft, 'NOTIFY_ENABLED', 'Besked om afbud'),
     numberField(draft, 'NOTIFY_MAX_DAYS_AHEAD', 'Op til så mange dage frem', 1, 30),
