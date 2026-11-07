@@ -961,7 +961,7 @@ function statusLine(label, value) {
 function statusNodes(status, now = Date.now()) {
   const age = now - status.sent;
   const server = status.settings || {};
-  const nodes = [statusLine('Sidst hørt', timeAgo(age))];
+  const nodes = [statusLine('Sidste statusopdatering', timeAgo(age))];
   if (age > STATUS_STALE_MS) nodes.push(el('p', '', 'Tjekket har ikke meldt sig længe. Serveren kan være nede.'));
   if (status.failing) nodes.push(el('p', '', 'Tjekket kan ikke læse kalenderen lige nu.'));
   nodes.push(
