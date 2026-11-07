@@ -907,6 +907,82 @@ function openAppSettings() {
   );
 }
 
+// Tjekket melder sig hver time og ved ændringer, på et emne telefonen ikke abonnerer på.
+const STATUS_STALE_MS = 2 * 60 * 60 * 1000;
+const statusUrl = () => `${NTFY}/${encodeURIComponent(saved.topic)}-status`;
+
+async function fetchStatus() {
+  const response = await fetch(`${statusUrl()}/json?poll=1&since=12h`);
+  if (!response.ok) throw new Error('Status kunne ikke hentes');
+  const messages = (await response.text()).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const latest = messages.filter((message) => message.event === 'message').pop();
+  return latest ? { ...JSON.parse(latest.message), sent: latest.time * 1000 } : null;
+}
+
+function timeAgo(ms) {
+  const minutes = Math.floor(ms / 60000);
+  if (minutes < 1) return 'lige nu';
+  if (minutes < 60) return `for ${minutes} min siden`;
+  return `for ${Math.floor(minutes / 60)} t ${minutes % 60} min siden`;
+}
+
+function autobookSummary(server) {
+  if (server.AUTOBOOK_ENABLED !== 'true') return 'Fra';
+  const weekdays = server.AUTOBOOK_WEEKDAYS;
+  const days = !weekdays || weekdays === ALL_WEEKDAYS ? 'alle dage' : weekdays.replaceAll(',', ', ');
+  const { AUTOBOOK_EARLIEST_START: earliest, AUTOBOOK_LATEST_START: latest } = server;
+  const times = earliest || latest ? `${earliest || 'start'}–${latest || 'slut'}` : 'alle tider';
+  return `${days} · ${times} · op til ${server.AUTOBOOK_MAX_DAYS_AHEAD} dage frem · beholder ${server.AUTOBOOK_KEEP_FREE || 1}`;
+}
+
+function statusLine(label, value) {
+  const line = el('p');
+  line.append(el('span', 'muted', `${label}: `), value);
+  return line;
+}
+
+function statusNodes(status, now = Date.now()) {
+  const age = now - status.sent;
+  const server = status.settings || {};
+  const nodes = [statusLine('Sidst hørt', timeAgo(age))];
+  if (age > STATUS_STALE_MS) nodes.push(el('p', '', 'Tjekket har ikke meldt sig længe. Serveren kan være nede.'));
+  if (status.failing) nodes.push(el('p', '', 'Tjekket kan ikke læse kalenderen lige nu.'));
+  nodes.push(
+    statusLine('Bookinger tilbage', String(status.remaining ?? '?')),
+    statusLine('Besked om afbud', server.NOTIFY_ENABLED === 'true' ? 'Til' : 'Fra'),
+    statusLine('Autobooking', autobookSummary(server)),
+  );
+  if (status.pause_until && status.pause_until.slice(0, 10) > isoDate(new Date(now))) {
+    nodes.push(statusLine('Pause til', shortDate(status.pause_until.slice(0, 10))));
+  }
+  if (status.cancelled?.length) {
+    const slots = status.cancelled.map((key) => `${shortDate(key.slice(0, 10))} ${key.slice(11)}`).join(', ');
+    nodes.push(statusLine('Slettet af dig, bookes ikke igen', slots));
+  }
+  if (status.log?.length) {
+    nodes.push(el('p', 'muted', 'Seneste afbud på dine autobooking-tider:'));
+    for (const note of status.log) nodes.push(el('p', '', `${note.slot}: ${note.text}`));
+  }
+  return nodes;
+}
+
+async function openStatus() {
+  const title = el('h2', '', 'Status på tjekket');
+  const back = action('Tilbage', 'secondary', openMenu);
+  if (!saved.topic) return sheet(title, el('p', 'muted', 'Indtast dit ntfy-emne under App først.'), back);
+  const loading = el('p', 'muted', 'Henter...');
+  sheet(title, loading, back);
+  let nodes;
+  try {
+    const status = await fetchStatus();
+    nodes = status ? statusNodes(status) : [el('p', '', 'Intet hørt fra tjekket de sidste 12 timer. Serveren kan være nede.')];
+  } catch {
+    nodes = [el('p', '', 'Kunne ikke hente status fra ntfy.')];
+  }
+  // Arket kan være lukket eller skiftet, mens der blev hentet.
+  if (loading.isConnected) sheet(title, ...nodes, back);
+}
+
 function openMenu() {
   const current = settings();
   const autobook = current.AUTOBOOK_ENABLED === 'true' ? 'Til' : 'Fra';
@@ -915,6 +991,7 @@ function openMenu() {
     el('h2', '', 'Indstillinger'),
     action(`Notifikationer · ${notify}`, 'secondary', openNotifications),
     action(`Autobooking · ${autobook}`, 'secondary', openAutobook),
+    action('Status på tjekket', 'secondary', openStatus),
     action('App', 'secondary', openAppSettings),
     appLink(),
     action('Log ud', 'secondary', () => {
