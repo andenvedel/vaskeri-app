@@ -31,11 +31,12 @@
       <select id="laundry" aria-label="Vaskeri"></select>
       <p id="status" class="muted"></p>
     </div>
+    <button id="health" class="ghost health" aria-label="Status på tjekket" hidden><span></span></button>
     <button id="refresh" class="ghost" aria-label="Opdater">↻</button>
     <button id="menu" class="ghost" aria-label="Indstillinger">☰</button>
   </header>
-  <p id="nextBooking" class="next" hidden></p>
-  <button id="pauseChip" class="chip">Sæt notifikationer på pause</button>
+  <button id="pauseChip" class="chip on" hidden></button>
+  <button id="nextBooking" class="next" hidden></button>
   <section id="bookings" aria-label="Mine bookinger" hidden>
     <h2>Mine bookinger</h2>
     <div id="bookingList"></div>

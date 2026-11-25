@@ -242,10 +242,8 @@ const bookingAt = (date, start) => bookings.find((booking) => (
 
 function bookingRow(booking) {
   const active = isActive(booking);
-  const today = booking.date === isoDate(new Date());
-  const date = localDate(booking.date);
   const row = el('button', active ? 'booking active' : 'booking');
-  const when = today ? 'i dag' : `${WEEKDAYS[date.getDay()]} ${shortDate(booking.date)}`;
+  const when = dayText(booking.date);
   const where = booking.place === view.place ? booking.machines : `${booking.place} · ${booking.machines}`;
   row.append(el('strong', '', when), el('span', '', `${booking.start}–${booking.end}`), el('span', 'where', where));
   if (active) row.append(el('span', 'badge', 'I gang'));
@@ -262,7 +260,7 @@ function prebookRow(key) {
   const row = el('button', 'booking pre');
   row.append(
     el('strong', '', dayText(date)),
-    el('span', '', end ? `${start}–${end}` : start), el('span', 'where', 'Når du har en booking ledig'),
+    el('span', '', end ? `${start}–${end}` : start), el('span', 'where'),
     el('span', 'badge', 'Venter'),
   );
   row.addEventListener('click', () => openPrebook(key));
@@ -284,27 +282,46 @@ function dayText(date) {
 }
 
 // Forsidens bookinger dækker alle vaskerier, så den næste tid vises uanset det valgte vaskeri.
+function nextBooking() {
+  const now = new Date();
+  return bookings.find((b) => `${b.date} ${b.end}` > `${isoDate(now)} ${clock(now.getHours() * 60 + now.getMinutes())}`);
+}
+
 function renderNext() {
   const box = $('nextBooking');
   if (!box) return;
-  const now = new Date();
-  const next = bookings.find((b) => `${b.date} ${b.end}` > `${isoDate(now)} ${clock(now.getHours() * 60 + now.getMinutes())}`);
+  const next = nextBooking();
   box.hidden = !next;
   if (!next) return;
   const startsAt = new Date(`${next.date}T${next.start}:00`);
-  const minutes = Math.ceil((startsAt - now) / 60000);
+  const minutes = Math.ceil((startsAt - new Date()) / 60000);
   const where = next.place === view.place ? next.machines : `${next.place} · ${next.machines}`;
-  const when = minutes <= 0 ? `I gang, slutter ${next.end}` : `${dayText(next.date)} ${next.start} (${untilText(minutes)})`;
-  box.replaceChildren(el('span', 'muted', 'Din næste tid'), el('strong', '', when), el('span', 'muted', where));
+  const when = minutes <= 0 ? `I gang, slutter ${next.end}` : `${dayText(next.date)} ${next.start}–${next.end}`;
+  const auto = isAutobooked(next.place, next.date, next.start) ? ' · autobooket' : '';
+  box.classList.toggle('active', minutes <= 0);
+  box.replaceChildren(
+    el('span', 'label', minutes <= 0 ? 'Din tid er i gang' : `Din næste tid · ${untilText(minutes)}`),
+    el('strong', '', when), el('span', 'where', `${where}${auto}`),
+  );
+  box.onclick = () => openBooking(next);
 }
 
 function renderBookings() {
   const box = $('bookings');
   // En gemt index.html fra før bookinglisten kan møde en nyere app.js.
   if (!box) return;
+  // Den næste tid står allerede i kortet øverst.
+  const next = $('nextBooking') ? nextBooking() : null;
+  const rest = bookings.filter((booking) => booking !== next);
   const waiting = prebooks();
-  box.hidden = !bookings.length && !waiting.length;
-  $('bookingList').replaceChildren(...bookings.map(bookingRow), ...waiting.map(prebookRow));
+  box.hidden = !rest.length && !waiting.length;
+  box.querySelector('h2').textContent = next ? 'Senere' : 'Mine bookinger';
+  // Bookinger og forhåndsbookinger i én liste efter tid.
+  const rows = [
+    ...rest.map((booking) => [`${booking.date} ${booking.start}`, bookingRow(booking)]),
+    ...waiting.map((key) => [key, prebookRow(key)]),
+  ].sort(([a], [b]) => a.localeCompare(b));
+  $('bookingList').replaceChildren(...rows.map(([, row]) => row));
 }
 
 function openBooking(booking) {
@@ -531,6 +548,8 @@ async function refresh() {
   }
   loading = true;
   $('refresh').disabled = true;
+  $('refresh').classList.add('spin');
+  if (!view.days.length) renderSkeleton();
   try {
     await fetchCalendar();
     render();
@@ -546,11 +565,22 @@ async function refresh() {
   } finally {
     loading = false;
     $('refresh').disabled = false;
+    $('refresh').classList.remove('spin');
     if (refreshAgain) {
       refreshAgain = false;
       refresh();
     }
   }
+}
+
+function renderSkeleton() {
+  const rows = [el('div', 'row head skeleton-head')];
+  for (let i = 0; i < 8; i++) {
+    const row = el('div', 'row skeleton');
+    row.append(el('div', 'day'), ...Array.from({ length: 5 }, () => el('div', 'cell')));
+    rows.push(row);
+  }
+  $('calendar').replaceChildren(...rows);
 }
 
 function renderStatus() {
@@ -563,8 +593,9 @@ function render() {
   calendar.replaceChildren();
   renderLaundries();
   renderPause();
-  renderBookings();
   renderNext();
+  renderBookings();
+  renderHealth();
   renderLive();
   if (!view.days.length) return;
   renderStatus();
@@ -653,12 +684,6 @@ function action(text, className, onClick) {
 }
 
 const closeButton = (text = 'Luk') => action(text, 'secondary', () => $('sheet').close());
-
-function appLink() {
-  const link = el('a', 'button', 'Åbn e-vaskeri-appen');
-  link.href = E_VASKERI_APP;
-  return link;
-}
 
 function openSlot(day, slot) {
   const title = el('h2', '', describe(day, slot));
@@ -772,7 +797,7 @@ const nowKey = () => { const d = new Date(); return `${isoDate(d)} ${clock(d.get
 // En tid du har booket selv, venter ikke længere, også før tjekket har nået at melde det.
 const bookedHere = (key) => calendarId === HOME_CALENDAR_ID && view.days
   .find((d) => d.date === key.slice(0, 10))?.slots.find((s) => s.start === key.slice(11))?.kind === 'mine';
-const prebooks = () => (saved.prebooks || []).filter((key) => key > nowKey() && !bookedHere(key));
+const prebooks = () => (saved.prebooks || []).filter((key) => key > nowKey() && !bookedHere(key)).sort();
 const isPrebooked = (day, slot) => calendarId === HOME_CALENDAR_ID && prebooks().includes(slotKey(day, slot));
 // Tjekket booker kun i hjemmevaskeriet.
 const homePlace = () => saved.laundries?.find((l) => l.id === HOME_CALENDAR_ID)?.title
@@ -810,12 +835,36 @@ function openPrebook(key) {
   sheet(...nodes);
 }
 
+// undefined: ikke hentet endnu. null: tjekket har ikke meldt sig.
+let lastStatus;
+
+function statusHealth(status, now = Date.now()) {
+  if (!status) return { ok: false, text: 'Intet hørt fra tjekket de sidste 12 timer' };
+  const age = now - status.sent;
+  if (age > STATUS_STALE_MS) return { ok: false, text: `Tjekket meldte sig sidst ${timeAgo(age)}` };
+  if (status.failing) return { ok: false, text: 'Tjekket kan ikke læse kalenderen lige nu' };
+  return { ok: true, text: `Tjekket kører · meldte sig ${timeAgo(age)}` };
+}
+
+function renderHealth() {
+  const dot = $('health');
+  if (!dot) return;
+  dot.hidden = !saved.topic || lastStatus === undefined;
+  if (dot.hidden) return;
+  const health = statusHealth(lastStatus);
+  dot.classList.toggle('bad', !health.ok);
+  dot.setAttribute('aria-label', health.text);
+  dot.title = health.text;
+}
+
 // Tjekket fjerner en forhåndsbooking, når den er booket eller tiden er gået. Kun en status
 // sendt efter appens egen seneste besked må overskrive listen. Autobookingerne kendes kun herfra.
 async function syncPrebooks() {
   if (!saved.topic) return;
   try {
     const status = await fetchStatus();
+    lastStatus = status;
+    renderHealth();
     if (!status) return;
     const before = JSON.stringify([saved.prebooks, saved.autobooked]);
     if (Array.isArray(status.autobooked)) saved.autobooked = status.autobooked;
@@ -833,11 +882,13 @@ function activePause() {
   return saved.pauseUntil && saved.pauseUntil > isoDate(new Date()) ? saved.pauseUntil : null;
 }
 
+// Pausen sættes fra menuen eller notifikationen. Her ses den kun, mens den er slået til.
 function renderPause() {
   const until = activePause();
   const chip = $('pauseChip');
-  chip.textContent = until ? `Pause: ingen besked før ${shortDate(until)}` : 'Sæt notifikationer på pause';
-  chip.classList.toggle('on', Boolean(until));
+  chip.hidden = !until;
+  chip.classList.add('on');
+  if (until) chip.textContent = `Pause · ingen besked om afbud før ${shortDate(until)}`;
 }
 
 const controlUrl = () => `${NTFY}/${encodeURIComponent(saved.topic)}-styring`;
@@ -879,7 +930,7 @@ function openPause() {
     action('14 dage', 'secondary', () => pauseDays(14)),
   ];
   if (activePause()) nodes.push(action('Slå pause fra', 'secondary', () => sendCommand('resume', null)));
-  nodes.push(closeButton());
+  nodes.push(action('Tilbage', 'secondary', openMenu));
   sheet(...nodes);
 }
 
@@ -969,6 +1020,29 @@ function weekdayField(draft, key, text) {
   return group;
 }
 
+// En sektion der viser sine værdier på én linje og foldes ud ved tryk.
+function section(title, summarize, fields, open = false) {
+  const details = el('details', 'section');
+  details.open = open;
+  const head = el('summary');
+  const value = el('span', 'value', summarize());
+  head.append(el('span', 'title', title), value);
+  details.append(head, el('div', 'fields'));
+  details.lastChild.append(...fields);
+  const update = () => { value.textContent = summarize(); };
+  for (const type of ['input', 'change', 'click']) details.addEventListener(type, update);
+  return details;
+}
+
+const onOff = (value) => (value === 'true' ? 'Til' : 'Fra');
+const minutesText = (value, never = 'aldrig') => {
+  const minutes = Number(value);
+  if (!minutes) return never;
+  if (minutes % 1440 === 0) return `${minutes / 1440} dag før`;
+  if (minutes % 60 === 0) return `${minutes / 60} t før`;
+  return `${minutes} min før`;
+};
+
 function startOptions(anyText) {
   const starts = view.days[0]?.slots.map((slot) => slot.start) || SLOT_STARTS;
   return [['', anyText], ...starts.map((start) => [start, start])];
@@ -1024,20 +1098,26 @@ function openNotifications() {
   const test = action('Send testbesked gennem tjekket', 'secondary', () => sendTest(test));
   test.disabled = !saved.topic;
   settingsSheet('Notifikationer', '', draft, [
-    el('h3', '', 'Afbud'),
     toggleField(draft, 'NOTIFY_ENABLED', 'Besked om afbud'),
-    numberField(draft, 'NOTIFY_MAX_DAYS_AHEAD', 'Op til så mange dage frem', 1, 30),
-    weekdayField(draft, 'NOTIFY_WEEKDAYS', 'Ugedage'),
-    selectField(draft, 'NOTIFY_EARLIEST_START', 'Tidligste start', startOptions('Alle tider')),
-    selectField(draft, 'NOTIFY_LATEST_START', 'Seneste start', startOptions('Alle tider')),
-    numberField(draft, 'NOTIFY_MIN_LEAD_MINUTES', 'Ignorér tider der starter om under (minutter)', 0, 720),
-    numberField(draft, 'NOTIFY_URGENT_DAYS', 'Høj prioritet inden for (dage)', 0, 30),
-    numberField(draft, 'WASH_PAUSE_DAYS', 'Dage på pause efter "Har vasket"', 1, 30),
-    el('h3', '', 'Stille tid'),
-    timeField(draft, 'QUIET_START', 'Fra'),
-    timeField(draft, 'QUIET_END', 'Til'),
-    numberField(draft, 'NOTIFY_NIGHT_DAYS', 'Væk mig kun for tider inden for (dage)', 0, 30),
-    el('h3', '', 'Min vask'),
+    section('Hvilke afbud', () => windowSummary(draft, 'NOTIFY'), [
+      numberField(draft, 'NOTIFY_MAX_DAYS_AHEAD', 'Op til så mange dage frem', 1, 30),
+      weekdayField(draft, 'NOTIFY_WEEKDAYS', 'Ugedage'),
+      selectField(draft, 'NOTIFY_EARLIEST_START', 'Tidligste start', startOptions('Alle tider')),
+      selectField(draft, 'NOTIFY_LATEST_START', 'Seneste start', startOptions('Alle tider')),
+      numberField(draft, 'NOTIFY_MIN_LEAD_MINUTES', 'Ignorér tider der starter om under (minutter)', 0, 720),
+      numberField(draft, 'NOTIFY_URGENT_DAYS', 'Høj prioritet inden for (dage)', 0, 30),
+      numberField(draft, 'WASH_PAUSE_DAYS', 'Dage på pause efter "Har vasket"', 1, 30),
+    ]),
+    section('Stille tid', () => `${draft.QUIET_START}–${draft.QUIET_END} · væk kun for ${draft.NOTIFY_NIGHT_DAYS} dage frem`, [
+      timeField(draft, 'QUIET_START', 'Fra'),
+      timeField(draft, 'QUIET_END', 'Til'),
+      numberField(draft, 'NOTIFY_NIGHT_DAYS', 'Væk mig kun for tider inden for (dage)', 0, 30),
+    ]),
+    section('Min vask', () => [
+      draft.NOTIFY_MACHINE_DONE === 'true' ? 'færdig' : '',
+      draft.NOTIFY_MACHINE_ALMOST_DONE_MINUTES !== '0' ? `næsten færdig (${draft.NOTIFY_MACHINE_ALMOST_DONE_MINUTES} min)` : '',
+      draft.NOTIFY_BOOKING_REMINDER_MINUTES !== '0' ? `påmindelse ${minutesText(draft.NOTIFY_BOOKING_REMINDER_MINUTES)}` : '',
+    ].filter(Boolean).join(' · ') || 'Ingen beskeder', [
     toggleField(draft, 'NOTIFY_MACHINE_DONE', 'Besked når min maskine er færdig'),
     selectField(draft, 'NOTIFY_MACHINE_ALMOST_DONE_MINUTES', 'Besked med vibration før min maskine er færdig', [
       ['0', 'Aldrig'], ['1', '1 minut før'], ['2', '2 minutter før'], ['3', '3 minutter før'],
@@ -1047,18 +1127,23 @@ function openNotifications() {
       ['0', 'Aldrig'], ['15', '15 minutter før'], ['30', '30 minutter før'],
       ['60', '1 time før'], ['120', '2 timer før'], ['1440', '1 dag før'],
     ]),
+    ]),
   ], [test]);
 }
 
 function openAutobook() {
   const draft = settings();
-  settingsSheet('Autobooking', 'Booker selv enhver ledig tid, der passer herunder, og giver besked bagefter. Højst én tid pr. tjek. Tider du selv sletter, bookes ikke igen. Forhåndsbookinger går forud.', draft, [
+  settingsSheet('Autobooking', 'Booker selv ledige tider, der passer, og giver besked bagefter. Højst én tid pr. tjek. Tider du selv sletter, bookes ikke igen.', draft, [
     toggleField(draft, 'AUTOBOOK_ENABLED', 'Book afbud automatisk'),
-    numberField(draft, 'AUTOBOOK_MAX_DAYS_AHEAD', 'Op til så mange dage frem', 1, 30),
-    weekdayField(draft, 'AUTOBOOK_WEEKDAYS', 'Ugedage'),
-    selectField(draft, 'AUTOBOOK_EARLIEST_START', 'Tidligste start', startOptions('Alle tider')),
-    selectField(draft, 'AUTOBOOK_LATEST_START', 'Seneste start', startOptions('Alle tider')),
-    numberField(draft, 'AUTOBOOK_KEEP_FREE', 'Lad så mange bookinger stå til mig selv', 0, 10),
+    section('Hvilke tider', () => windowSummary(draft, 'AUTOBOOK'), [
+      numberField(draft, 'AUTOBOOK_MAX_DAYS_AHEAD', 'Op til så mange dage frem', 1, 30),
+      weekdayField(draft, 'AUTOBOOK_WEEKDAYS', 'Ugedage'),
+      selectField(draft, 'AUTOBOOK_EARLIEST_START', 'Tidligste start', startOptions('Alle tider')),
+      selectField(draft, 'AUTOBOOK_LATEST_START', 'Seneste start', startOptions('Alle tider')),
+    ]),
+    section('Til dig selv', () => `beholder ${draft.AUTOBOOK_KEEP_FREE} booking(er)`, [
+      numberField(draft, 'AUTOBOOK_KEEP_FREE', 'Lad så mange bookinger stå til mig selv', 0, 10),
+    ]),
   ], [action('Nulstil autobooking', 'secondary', confirmAutobookReset)]);
 }
 
@@ -1066,19 +1151,20 @@ function openPrebookMenu() {
   const draft = settings();
   const waiting = prebooks();
   const list = waiting.length
-    ? waiting.map((key) => action(`${keyLabel(key)} · fjern`, 'secondary', () => setPrebook(key, false)))
+    ? waiting.map((key) => menuRow(keyLabel(key), 'Fjern', () => setPrebook(key, false), 'remove-row'))
     : [el('p', 'muted', 'Ingen. Tryk på en optaget eller fuld tid i kalenderen for at forhåndsbooke den.')];
-  settingsSheet('Forhåndsbooking', 'Forhåndsbookinger og dit faste ønske går forud for autobooking. Har du ingen booking ledig, slettes din senest autobookede tid for at give plads. Dine egne bookinger røres aldrig.', draft, [
+  settingsSheet('Forhåndsbooking', 'Går forud for autobooking. Har du ingen booking ledig, slettes din senest autobookede tid for at give plads. Dine egne bookinger røres aldrig.', draft, [
     el('h3', '', 'Venter'),
-    ...list,
-    el('h3', '', 'Fast ønske'),
-    el('p', 'muted', 'Har du ingen tid, der passer herunder, booker tjekket den tidligste ledige, der gør.'),
-    toggleField(draft, 'PREBOOK_RULE_ENABLED', 'Sørg for, at jeg har en tid, der passer'),
-    numberField(draft, 'PREBOOK_RULE_MAX_DAYS_AHEAD', 'Op til så mange dage frem', 1, 30),
-    weekdayField(draft, 'PREBOOK_RULE_WEEKDAYS', 'Ugedage'),
-    selectField(draft, 'PREBOOK_RULE_EARLIEST_START', 'Tidligste start', startOptions('Alle tider')),
-    selectField(draft, 'PREBOOK_RULE_LATEST_START', 'Seneste start', startOptions('Alle tider')),
+    el('div', 'menu-group'),
+    toggleField(draft, 'PREBOOK_RULE_ENABLED', 'Fast ønske: sørg for, at jeg har en tid, der passer'),
+    section('Hvilke tider', () => windowSummary(draft, 'PREBOOK_RULE'), [
+      numberField(draft, 'PREBOOK_RULE_MAX_DAYS_AHEAD', 'Op til så mange dage frem', 1, 30),
+      weekdayField(draft, 'PREBOOK_RULE_WEEKDAYS', 'Ugedage'),
+      selectField(draft, 'PREBOOK_RULE_EARLIEST_START', 'Tidligste start', startOptions('Alle tider')),
+      selectField(draft, 'PREBOOK_RULE_LATEST_START', 'Seneste start', startOptions('Alle tider')),
+    ]),
   ]);
+  $('sheetBody').querySelector('.menu-group').append(...list);
 }
 
 function confirmAutobookReset() {
@@ -1155,44 +1241,45 @@ function prebookMenuText(current) {
   return parts.filter(Boolean).join(' · ') || 'Ingen';
 }
 
-function statusLine(label, value) {
-  const line = el('p');
-  line.append(el('span', 'muted', `${label}: `), value);
-  return line;
+function card(title, rows) {
+  const box = el('section', 'card');
+  box.append(el('h3', '', title));
+  for (const [label, value] of rows.filter(Boolean)) {
+    const row = el('div', 'card-row');
+    row.append(el('span', 'muted', label), el('span', '', value));
+    box.append(row);
+  }
+  return box;
 }
 
+const keyList = (keys) => keys.map(keyLabel).join(', ');
+
 function statusNodes(status, now = Date.now()) {
-  const age = now - status.sent;
   const server = status.settings || {};
-  const nodes = [statusLine('Sidste statusopdatering', timeAgo(age))];
-  if (age > STATUS_STALE_MS) nodes.push(el('p', '', 'Tjekket har ikke meldt sig længe. Serveren kan være nede.'));
-  if (status.failing) nodes.push(el('p', '', 'Tjekket kan ikke læse kalenderen lige nu.'));
-  nodes.push(
-    statusLine('Bookinger tilbage', String(status.remaining ?? '?')),
-    statusLine('Besked om afbud', server.NOTIFY_ENABLED === 'true' ? 'Til' : 'Fra'),
-    statusLine('Autobooking', autobookSummary(server)),
-    statusLine('Fast ønske', server.PREBOOK_RULE_ENABLED === 'true' ? windowSummary(server, 'PREBOOK_RULE') : 'Fra'),
-  );
-  if (status.pause_until && status.pause_until.slice(0, 10) > isoDate(new Date(now))) {
-    nodes.push(statusLine('Pause til', shortDate(status.pause_until.slice(0, 10))));
-  }
-  if (status.prebook?.length) {
-    nodes.push(statusLine('Forhåndsbooket, venter', status.prebook.map(keyLabel).join(', ')));
-  }
-  if (status.bump_next) {
-    nodes.push(statusLine('Slettes først, hvis en forhåndsbooking skal bruge pladsen', `${keyLabel(status.bump_next)} (autobooking)`));
-  }
-  if (status.prebook_failed?.length) {
-    nodes.push(statusLine('Fejlede, prøves igen inden for en time', status.prebook_failed.map(keyLabel).join(', ')));
-  }
-  if (status.cancelled?.length) {
-    const slots = status.cancelled.map((key) => `${shortDate(key.slice(0, 10))} ${key.slice(11)}`).join(', ');
-    nodes.push(statusLine('Slettet af dig, bookes ikke igen', slots));
-  }
-  if (status.log?.length) {
-    nodes.push(el('p', 'muted', 'Seneste autobooking og forhåndsbooking:'));
-    for (const note of status.log) nodes.push(el('p', '', `${note.slot}: ${note.text}`));
-  }
+  const health = statusHealth(status, now);
+  const banner = el('p', `health-line${health.ok ? '' : ' bad'}`, health.text);
+  const pause = status.pause_until && status.pause_until.slice(0, 10) > isoDate(new Date(now))
+    ? shortDate(status.pause_until.slice(0, 10)) : null;
+  const nodes = [
+    banner,
+    card('Bookinger', [
+      ['Tilbage', String(status.remaining ?? '?')],
+      ['Besked om afbud', server.NOTIFY_ENABLED === 'true' ? 'Til' : 'Fra'],
+      pause && ['Pause til', pause],
+      status.cancelled?.length && ['Slettet af dig, bookes ikke igen', keyList(status.cancelled)],
+    ]),
+    card('Autobooking', [
+      ['Indstilling', autobookSummary(server)],
+      status.autobooked?.length && ['Autobookede tider', keyList(status.autobooked)],
+      status.bump_next && ['Slettes først ved forhåndsbooking', keyLabel(status.bump_next)],
+    ]),
+    card('Forhåndsbooking', [
+      ['Venter', status.prebook?.length ? keyList(status.prebook) : 'Ingen'],
+      ['Fast ønske', server.PREBOOK_RULE_ENABLED === 'true' ? windowSummary(server, 'PREBOOK_RULE') : 'Fra'],
+      status.prebook_failed?.length && ['Fejlede, prøves igen om lidt', keyList(status.prebook_failed)],
+    ]),
+  ];
+  if (status.log?.length) nodes.push(card('Seneste hændelser', status.log.map((note) => [note.slot, note.text])));
   return nodes;
 }
 
@@ -1205,7 +1292,9 @@ async function openStatus() {
   let nodes;
   try {
     const status = await fetchStatus();
-    nodes = status ? statusNodes(status) : [el('p', '', 'Intet hørt fra tjekket de sidste 12 timer. Serveren kan være nede.')];
+    lastStatus = status;
+    renderHealth();
+    nodes = status ? statusNodes(status) : [el('p', 'health-line bad', 'Intet hørt fra tjekket de sidste 12 timer. Serveren kan være nede.')];
   } catch {
     nodes = [el('p', '', 'Kunne ikke hente status fra ntfy.')];
   }
@@ -1213,23 +1302,52 @@ async function openStatus() {
   if (loading.isConnected) sheet(title, ...nodes, back);
 }
 
+function menuRow(label, value, onClick, className = '') {
+  const row = el('button', `menu-row ${className}`.trim());
+  row.append(el('span', 'title', label), el('span', 'value', value || ''), el('span', 'chevron', '›'));
+  row.addEventListener('click', onClick);
+  return row;
+}
+
+function menuGroup(title, ...rows) {
+  const group = el('div', 'menu-group');
+  group.append(...rows);
+  return [el('h3', '', title), group];
+}
+
+function logOut() {
+  // Tjekket kører videre med indstillingerne, så appen skal stadig kende dem.
+  localStorage.setItem('vaskeri', JSON.stringify({ settings: saved.settings }));
+  location.reload();
+}
+
 function openMenu() {
   const current = settings();
-  const autobook = current.AUTOBOOK_ENABLED === 'true' ? 'Til' : 'Fra';
-  const notify = current.NOTIFY_ENABLED === 'true' ? 'Til' : 'Fra';
+  const until = activePause();
+  const health = saved.topic && lastStatus !== undefined ? statusHealth(lastStatus) : null;
+  const eVaskeri = menuRow('e-vaskeri-appen', 'Åbn', () => { location.href = E_VASKERI_APP; });
   sheet(
     el('h2', '', 'Indstillinger'),
-    action(`Notifikationer · ${notify}`, 'secondary', openNotifications),
-    action(`Autobooking · ${autobook}`, 'secondary', openAutobook),
-    action(`Forhåndsbooking · ${prebookMenuText(current)}`, 'secondary', openPrebookMenu),
-    action('Status på tjekket', 'secondary', openStatus),
-    action('App', 'secondary', openAppSettings),
-    appLink(),
-    action('Log ud', 'secondary', () => {
-      // Tjekket kører videre med indstillingerne, så appen skal stadig kende dem.
-      localStorage.setItem('vaskeri', JSON.stringify({ settings: saved.settings }));
-      location.reload();
-    }),
+    ...menuGroup(
+      'Booking',
+      menuRow('Autobooking', current.AUTOBOOK_ENABLED === 'true' ? windowSummary(current, 'AUTOBOOK') : 'Fra', openAutobook),
+      menuRow('Forhåndsbooking', prebookMenuText(current), openPrebookMenu),
+    ),
+    ...menuGroup(
+      'Beskeder',
+      menuRow('Notifikationer', onOff(current.NOTIFY_ENABLED), openNotifications),
+      menuRow('Pause', until ? `Til ${shortDate(until)}` : 'Fra', openPause),
+    ),
+    ...menuGroup(
+      'Tjekket',
+      menuRow('Status', health ? (health.ok ? 'Kører' : 'Problem') : '', openStatus, health && !health.ok ? 'warn' : ''),
+    ),
+    ...menuGroup(
+      'Konto',
+      menuRow('App', saved.topic ? 'ntfy-emne sat' : 'Mangler ntfy-emne', openAppSettings),
+      eVaskeri,
+      menuRow('Log ud', '', logOut, 'danger-row'),
+    ),
     closeButton(),
   );
 }
@@ -1282,12 +1400,34 @@ $('loginForm').addEventListener('submit', submitLogin);
 $('refresh').addEventListener('click', refresh);
 $('menu').addEventListener('click', openMenu);
 $('pauseChip').addEventListener('click', openPause);
+$('health')?.addEventListener('click', openStatus);
 $('laundry').addEventListener('change', (event) => switchLaundry(Number(event.target.value)));
 $('more').addEventListener('click', () => { daysShown += 30; refresh(); });
 $('sheet').addEventListener('click', (event) => { if (event.target === $('sheet')) $('sheet').close(); });
 window.addEventListener('hashchange', flashHash);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && !$('app').hidden) refresh();
+});
+
+// Træk ned øverst på siden for at opdatere.
+const PULL_DISTANCE = 70;
+let pullStart = null;
+document.addEventListener('touchstart', (event) => {
+  pullStart = window.scrollY === 0 && !$('sheet').open && !$('app').hidden ? event.touches[0].clientY : null;
+}, { passive: true });
+document.addEventListener('touchmove', (event) => {
+  if (pullStart === null) return;
+  const distance = Math.max(0, Math.min(event.touches[0].clientY - pullStart, PULL_DISTANCE * 1.5));
+  $('app').style.transform = distance ? `translateY(${distance / 3}px)` : '';
+  $('refresh').classList.toggle('armed', distance >= PULL_DISTANCE);
+}, { passive: true });
+document.addEventListener('touchend', () => {
+  if (pullStart === null) return;
+  const armed = $('refresh').classList.contains('armed');
+  pullStart = null;
+  $('app').style.transform = '';
+  $('refresh').classList.remove('armed');
+  if (armed) refresh();
 });
 
 setInterval(tickLive, LIVE_TICK_MS);
