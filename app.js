@@ -444,40 +444,114 @@ function turnSoon(place) {
     && time < booking.end && (booking.start <= latest || limit.getDate() !== now.getDate()));
 }
 
-// "Færdig" på en andens maskine betyder, at den stadig står på deres konto, til den bliver fri.
-// "Reserveret" lige før din egen tid er typisk til dig og kan startes.
-function machineKind(section, unit) {
-  const kind = MACHINE_KIND[unit.status] || 'other';
-  if (kind === 'done' && !isMine(section, unit)) return 'used';
-  if (kind === 'reserved' && turnSoon(section.title)) return 'yours';
-  return kind;
+const isDryer = (unit) => /tørre/i.test(unit.text);
+const machineKey = (section, unit) => `${section.title}|${unit.text}`;
+
+// Reglerne i vaskeriet: den med tiden har 15 minutter til at starte, når tiden begynder, og til at
+// starte igen, når en maskine er færdig. Derefter er maskinen fri for alle. Den sidste time før en
+// tid er vaskemaskinerne låst til den, der har tiden. Tørretumblere kan ikke bookes.
+const GRACE_MS = 15 * 60000;
+const LOCK_BEFORE_MS = 60 * 60000;
+
+// Hvornår maskinerne forventes færdige, og hvornår de blev det. Gemmes, så de 15 minutter
+// overlever en genindlæsning. exact: vi så den køre, så tidspunktet er kendt.
+function trackMachines(section) {
+  const now = Date.now();
+  const old = saved.machineTimes || {};
+  const times = Object.fromEntries(Object.entries(old).filter(([key]) => !key.startsWith(`${section.title}|`)));
+  for (const unit of section.units) {
+    const key = machineKey(section, unit);
+    const kind = MACHINE_KIND[unit.status];
+    const prev = old[key] || {};
+    if (kind === 'busy' && unit.endsAt) times[key] = { endsAt: unit.endsAt };
+    else if (kind === 'done' && prev.doneAt) times[key] = prev;
+    else if (kind === 'done') {
+      const seen = prev.endsAt && prev.endsAt <= now + 60000 && now - prev.endsAt < GRACE_MS;
+      times[key] = { doneAt: seen ? Math.min(prev.endsAt, now) : now, exact: Boolean(seen) };
+    }
+  }
+  if (JSON.stringify(times) === JSON.stringify(old)) return;
+  saved.machineTimes = times;
+  save();
 }
 
-const DOOR_TEXT = { done: 'Klar', used: 'Brugt', yours: 'Din' };
-const KIND_TEXT = {
-  used: 'færdig, men står stadig på en andens konto',
-  yours: 'reserveret, kan startes til din tid',
-};
+// Tiderne i kalenderen for det viste vaskeri, som Date, med hvem der har dem.
+function slotsAround(now) {
+  const dates = [isoDate(now), isoDate(addDays(now, 1))];
+  return view.days.filter((day) => dates.includes(day.date)).flatMap((day) => day.slots.map((slot) => ({
+    start: new Date(`${day.date}T${slot.start}:00`),
+    end: new Date(`${day.date}T${slot.end}:00`),
+    owner: slot.kind === 'mine' ? 'mine' : slot.kind === 'taken' ? 'other' : 'none',
+  })));
+}
 
-function door(unit, kind) {
+const timeOf = (date) => clock(date.getHours() * 60 + date.getMinutes());
+
+// Hvad en maskine betyder for dig lige nu: { kind, until, exact, next }.
+function machineState(section, unit) {
+  const kind = MACHINE_KIND[unit.status] || 'other';
+  if (kind === 'reserved' && turnSoon(section.title)) return { kind: 'yours' };
+  if (isDryer(unit)) return { kind: kind === 'done' && !isMine(section, unit) ? 'free' : kind };
+  if (isMine(section, unit) || !['done', 'reserved', 'free'].includes(kind)) return { kind };
+
+  const now = new Date();
+  const slots = slotsAround(now);
+  let freeAt = null;
+  let exact = true;
+  if (kind === 'done') {
+    const times = saved.machineTimes?.[machineKey(section, unit)];
+    freeAt = times?.doneAt ? new Date(times.doneAt + GRACE_MS) : null;
+    exact = Boolean(times?.exact);
+  } else if (kind === 'reserved') {
+    // De første 15 minutter af en tid venter maskinen på den, der har tiden.
+    const current = slots.find((slot) => slot.start <= now && now < slot.end);
+    if (current && now - current.start < GRACE_MS) freeAt = new Date(current.start.getTime() + GRACE_MS);
+  }
+
+  const next = slots.find((slot) => slot.start > now);
+  const opensAt = freeAt && freeAt > now ? freeAt : now;
+  if (next && next.owner !== 'none' && opensAt >= next.start - LOCK_BEFORE_MS) {
+    if (next.owner === 'other') return { kind: 'locked', next };
+    return freeAt && freeAt > now ? { kind: 'wait', until: freeAt, exact, next, toMine: true } : { kind: 'yours' };
+  }
+  if (freeAt && freeAt > now) return { kind: 'wait', until: freeAt, exact, next };
+  // De 15 minutter er gået. e-vaskeri skifter først status et par minutter senere.
+  return { kind: kind === 'done' ? 'free' : kind };
+}
+
+const minutesUntil = (date) => Math.max(1, Math.ceil((date - Date.now()) / 60000));
+const DOOR_TEXT = { free: 'Fri', done: 'Klar', yours: 'Din', locked: 'Låst' };
+
+function door(unit, state) {
   const node = el('span', 'door');
   const seconds = secondsLeft(unit);
-  if (seconds === null) node.textContent = DOOR_TEXT[kind] || unit.status.slice(0, 3);
+  if (state.kind === 'wait') node.textContent = `${state.exact ? '' : '≤'}${minutesUntil(state.until)}`;
+  else if (seconds === null) node.textContent = DOOR_TEXT[state.kind] || unit.status.slice(0, 3);
   else if (!unit.exact) node.textContent = String(Math.ceil(seconds / 60));
   else node.append(el('span', '', String(Math.floor(seconds / 60))), el('small', '', `:${pad(seconds % 60)}`));
   return node;
 }
 
+function stateText(unit, state) {
+  if (state.kind === 'wait') {
+    const who = state.toMine ? 'din' : 'fri for alle';
+    return `${who} om ${state.exact ? '' : 'højst '}${minutesUntil(state.until)} min (kl. ${timeOf(state.until)})`;
+  }
+  if (state.kind === 'locked') return `låst til næste tid kl. ${timeOf(state.next.start)}`;
+  if (state.kind === 'yours') return 'kan startes til din tid';
+  return unit.status;
+}
+
 function machine(section, unit) {
   const seconds = secondsLeft(unit);
-  const type = /tørre/i.test(unit.text) ? 'dryer' : 'washer';
+  const type = isDryer(unit) ? 'dryer' : 'washer';
   const owner = isMine(section, unit) ? ' mine' : '';
-  const kind = machineKind(section, unit);
-  const node = el('div', `machine ${type} ${kind}${owner}`);
+  const state = machineState(section, unit);
+  const node = el('div', `machine ${type} ${state.kind}${state.toMine ? ' to-mine' : ''}${owner}`);
   const left = seconds === null ? '' : `, ${Math.ceil(seconds / 60)} minutter tilbage`;
   node.setAttribute('role', 'img');
-  node.setAttribute('aria-label', `${unit.text}${owner ? ' (din)' : ''}: ${KIND_TEXT[kind] || unit.status}${left}`);
-  node.append(door(unit, kind), el('span', 'name', shortMachine(unit.text)));
+  node.setAttribute('aria-label', `${unit.text}${owner ? ' (din)' : ''}: ${stateText(unit, state)}${left}`);
+  node.append(door(unit, state), el('span', 'name', shortMachine(unit.text)));
   return node;
 }
 
@@ -497,16 +571,23 @@ function renderLive() {
   const section = liveSection();
   box.hidden = !section?.units.length;
   if (box.hidden) return;
+  trackMachines(section);
   $('liveUnits').replaceChildren(...section.units.map((unit) => machine(section, unit)));
   const details = section.units
     .filter((unit) => isMine(section, unit) && MACHINE_KIND[unit.status] === 'busy')
     .map(machineDetail);
+  const states = section.units.map((unit) => [unit, machineState(section, unit)]);
   const soon = turnSoon(section.title);
-  if (soon && section.units.some((unit) => machineKind(section, unit) === 'yours')) {
+  if (soon && states.some(([, state]) => state.kind === 'yours')) {
     details.push(el('p', 'detail', `Din tid ${soon.start}: de reserverede maskiner kan startes nu.`));
   }
-  if (section.units.some((unit) => machineKind(section, unit) === 'used')) {
-    details.push(el('p', 'detail muted', 'Brugt: færdig, men står på en andens konto, til den bliver fri.'));
+  for (const [unit, state] of states.filter(([, s]) => s.kind === 'wait')) {
+    details.push(el('p', 'detail', `${shortMachine(unit.text)}: ${stateText(unit, state)}`));
+  }
+  // Låste maskiner samles på én linje, de er låst til samme tid.
+  const locked = states.filter(([, state]) => state.kind === 'locked');
+  if (locked.length) {
+    details.push(el('p', 'detail muted', `${machineList(locked.map(([unit]) => unit.text))}: ${stateText(...locked[0])}`));
   }
   $('liveDetails')?.replaceChildren(...details);
   $('liveUpdated').textContent = section.updated;
