@@ -50,6 +50,11 @@ const DEFAULT_SETTINGS = {
   AUTOBOOK_EARLIEST_START: '',
   AUTOBOOK_LATEST_START: '',
   AUTOBOOK_KEEP_FREE: '1',
+  PREBOOK_RULE_ENABLED: 'false',
+  PREBOOK_RULE_MAX_DAYS_AHEAD: '14',
+  PREBOOK_RULE_WEEKDAYS: ALL_WEEKDAYS,
+  PREBOOK_RULE_EARLIEST_START: '',
+  PREBOOK_RULE_LATEST_START: '',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -256,12 +261,41 @@ function prebookRow(key) {
     ? view.days.find((d) => d.date === date)?.slots.find((s) => s.start === start)?.end : null;
   const row = el('button', 'booking pre');
   row.append(
-    el('strong', '', `${WEEKDAYS[localDate(date).getDay()]} ${shortDate(date)}`),
+    el('strong', '', dayText(date)),
     el('span', '', end ? `${start}–${end}` : start), el('span', 'where', 'Når du har en booking ledig'),
     el('span', 'badge', 'Venter'),
   );
   row.addEventListener('click', () => openPrebook(key));
   return row;
+}
+
+function untilText(minutes) {
+  if (minutes < 60) return `om ${minutes} min`;
+  if (minutes < 24 * 60) return `om ${Math.floor(minutes / 60)} t ${minutes % 60} min`;
+  const days = Math.round(minutes / (24 * 60));
+  return `om ${days} ${days === 1 ? 'dag' : 'dage'}`;
+}
+
+function dayText(date) {
+  const today = new Date();
+  if (date === isoDate(today)) return 'i dag';
+  if (date === isoDate(addDays(today, 1))) return 'i morgen';
+  return `${WEEKDAYS[localDate(date).getDay()]} ${shortDate(date)}`;
+}
+
+// Forsidens bookinger dækker alle vaskerier, så den næste tid vises uanset det valgte vaskeri.
+function renderNext() {
+  const box = $('nextBooking');
+  if (!box) return;
+  const now = new Date();
+  const next = bookings.find((b) => `${b.date} ${b.end}` > `${isoDate(now)} ${clock(now.getHours() * 60 + now.getMinutes())}`);
+  box.hidden = !next;
+  if (!next) return;
+  const startsAt = new Date(`${next.date}T${next.start}:00`);
+  const minutes = Math.ceil((startsAt - now) / 60000);
+  const where = next.place === view.place ? next.machines : `${next.place} · ${next.machines}`;
+  const when = minutes <= 0 ? `I gang, slutter ${next.end}` : `${dayText(next.date)} ${next.start} (${untilText(minutes)})`;
+  box.replaceChildren(el('span', 'muted', 'Din næste tid'), el('strong', '', when), el('span', 'muted', where));
 }
 
 function renderBookings() {
@@ -530,6 +564,7 @@ function render() {
   renderLaundries();
   renderPause();
   renderBookings();
+  renderNext();
   renderLive();
   if (!view.days.length) return;
   renderStatus();
@@ -579,7 +614,8 @@ function cell(day, slot) {
   const waiting = slot.kind !== 'mine' && slot.kind !== 'past' && isPrebooked(day, slot);
   const kind = active ? 'active' : waiting ? 'pre' : slot.kind;
   const auto = kind === 'mine' && isAutobooked(view.place, day.date, slot.start);
-  const interactive = ['free', 'mine', 'max', 'active', 'pre'].includes(kind);
+  const interactive = ['free', 'mine', 'max', 'active', 'pre'].includes(kind)
+    || (kind === 'taken' && calendarId === HOME_CALENDAR_ID);
   const node = el(interactive ? 'button' : 'div', `cell ${kind}${auto ? ' auto' : ''}`, CELL_TEXT[auto ? 'auto' : kind]);
   if (interactive) {
     node.setAttribute('aria-label', `${describe(day, slot)}, ${auto ? 'Min tur, booket automatisk' : CELL_TEXT[kind]}`);
@@ -635,6 +671,14 @@ function openSlot(day, slot) {
     );
   }
   if (isPrebooked(day, slot)) return openPrebook(slotKey(day, slot));
+  if (slot.kind === 'taken') {
+    return sheet(
+      title, el('p', 'muted', 'Optaget af en anden.'),
+      el('p', 'muted', 'Forhåndsbook, og tjekket booker tiden, hvis den bliver ledig. Har du ingen booking ledig, slettes din senest autobookede tid for at give plads.'),
+      action('Forhåndsbook denne tid', 'primary', () => setPrebook(slotKey(day, slot), true)),
+      closeButton(),
+    );
+  }
   if (slot.kind === 'max') {
     const nodes = [title, el('p', 'muted', 'Tiden er ledig, men du har brugt alle dine bookinger.')];
     if (calendarId === HOME_CALENDAR_ID) {
@@ -932,8 +976,8 @@ function startOptions(anyText) {
 
 function settingsProblem(draft) {
   if (!saved.topic) return 'Indtast dit ntfy-emne under App først.';
-  if (!draft.NOTIFY_WEEKDAYS || !draft.AUTOBOOK_WEEKDAYS) return 'Vælg mindst én ugedag.';
-  for (const prefix of ['NOTIFY', 'AUTOBOOK']) {
+  if (!draft.NOTIFY_WEEKDAYS || !draft.AUTOBOOK_WEEKDAYS || !draft.PREBOOK_RULE_WEEKDAYS) return 'Vælg mindst én ugedag.';
+  for (const prefix of ['NOTIFY', 'AUTOBOOK', 'PREBOOK_RULE']) {
     const earliest = draft[`${prefix}_EARLIEST_START`];
     const latest = draft[`${prefix}_LATEST_START`];
     if (earliest && latest && earliest > latest) return 'Tidligste start ligger efter seneste start.';
@@ -1018,6 +1062,25 @@ function openAutobook() {
   ], [action('Nulstil autobooking', 'secondary', confirmAutobookReset)]);
 }
 
+function openPrebookMenu() {
+  const draft = settings();
+  const waiting = prebooks();
+  const list = waiting.length
+    ? waiting.map((key) => action(`${keyLabel(key)} · fjern`, 'secondary', () => setPrebook(key, false)))
+    : [el('p', 'muted', 'Ingen. Tryk på en optaget eller fuld tid i kalenderen for at forhåndsbooke den.')];
+  settingsSheet('Forhåndsbooking', 'Forhåndsbookinger og dit faste ønske går forud for autobooking. Har du ingen booking ledig, slettes din senest autobookede tid for at give plads. Dine egne bookinger røres aldrig.', draft, [
+    el('h3', '', 'Venter'),
+    ...list,
+    el('h3', '', 'Fast ønske'),
+    el('p', 'muted', 'Har du ingen tid, der passer herunder, booker tjekket den tidligste ledige, der gør.'),
+    toggleField(draft, 'PREBOOK_RULE_ENABLED', 'Sørg for, at jeg har en tid, der passer'),
+    numberField(draft, 'PREBOOK_RULE_MAX_DAYS_AHEAD', 'Op til så mange dage frem', 1, 30),
+    weekdayField(draft, 'PREBOOK_RULE_WEEKDAYS', 'Ugedage'),
+    selectField(draft, 'PREBOOK_RULE_EARLIEST_START', 'Tidligste start', startOptions('Alle tider')),
+    selectField(draft, 'PREBOOK_RULE_LATEST_START', 'Seneste start', startOptions('Alle tider')),
+  ]);
+}
+
 function confirmAutobookReset() {
   sheet(
     el('h2', '', 'Nulstil autobooking?'),
@@ -1072,13 +1135,24 @@ function timeAgo(ms) {
   return `for ${Math.floor(minutes / 60)} t ${minutes % 60} min siden`;
 }
 
+function windowSummary(server, prefix) {
+  const weekdays = server[`${prefix}_WEEKDAYS`];
+  const days = !weekdays || weekdays === ALL_WEEKDAYS ? 'alle dage' : weekdays.replaceAll(',', ', ');
+  const earliest = server[`${prefix}_EARLIEST_START`];
+  const latest = server[`${prefix}_LATEST_START`];
+  const times = earliest || latest ? `${earliest || 'start'}–${latest || 'slut'}` : 'alle tider';
+  return `${days} · ${times} · op til ${server[`${prefix}_MAX_DAYS_AHEAD`]} dage frem`;
+}
+
 function autobookSummary(server) {
   if (server.AUTOBOOK_ENABLED !== 'true') return 'Fra';
-  const weekdays = server.AUTOBOOK_WEEKDAYS;
-  const days = !weekdays || weekdays === ALL_WEEKDAYS ? 'alle dage' : weekdays.replaceAll(',', ', ');
-  const { AUTOBOOK_EARLIEST_START: earliest, AUTOBOOK_LATEST_START: latest } = server;
-  const times = earliest || latest ? `${earliest || 'start'}–${latest || 'slut'}` : 'alle tider';
-  return `${days} · ${times} · op til ${server.AUTOBOOK_MAX_DAYS_AHEAD} dage frem · beholder ${server.AUTOBOOK_KEEP_FREE || 1}`;
+  return `${windowSummary(server, 'AUTOBOOK')} · beholder ${server.AUTOBOOK_KEEP_FREE || 1}`;
+}
+
+function prebookMenuText(current) {
+  const count = prebooks().length;
+  const parts = [count ? `${count} venter` : '', current.PREBOOK_RULE_ENABLED === 'true' ? 'fast ønske' : ''];
+  return parts.filter(Boolean).join(' · ') || 'Ingen';
 }
 
 function statusLine(label, value) {
@@ -1097,12 +1171,19 @@ function statusNodes(status, now = Date.now()) {
     statusLine('Bookinger tilbage', String(status.remaining ?? '?')),
     statusLine('Besked om afbud', server.NOTIFY_ENABLED === 'true' ? 'Til' : 'Fra'),
     statusLine('Autobooking', autobookSummary(server)),
+    statusLine('Fast ønske', server.PREBOOK_RULE_ENABLED === 'true' ? windowSummary(server, 'PREBOOK_RULE') : 'Fra'),
   );
   if (status.pause_until && status.pause_until.slice(0, 10) > isoDate(new Date(now))) {
     nodes.push(statusLine('Pause til', shortDate(status.pause_until.slice(0, 10))));
   }
   if (status.prebook?.length) {
-    nodes.push(statusLine('Forhåndsbooket, venter på en ledig booking', status.prebook.map(keyLabel).join(', ')));
+    nodes.push(statusLine('Forhåndsbooket, venter', status.prebook.map(keyLabel).join(', ')));
+  }
+  if (status.bump_next) {
+    nodes.push(statusLine('Slettes først, hvis en forhåndsbooking skal bruge pladsen', `${keyLabel(status.bump_next)} (autobooking)`));
+  }
+  if (status.prebook_failed?.length) {
+    nodes.push(statusLine('Fejlede, prøves igen inden for en time', status.prebook_failed.map(keyLabel).join(', ')));
   }
   if (status.cancelled?.length) {
     const slots = status.cancelled.map((key) => `${shortDate(key.slice(0, 10))} ${key.slice(11)}`).join(', ');
@@ -1140,6 +1221,7 @@ function openMenu() {
     el('h2', '', 'Indstillinger'),
     action(`Notifikationer · ${notify}`, 'secondary', openNotifications),
     action(`Autobooking · ${autobook}`, 'secondary', openAutobook),
+    action(`Forhåndsbooking · ${prebookMenuText(current)}`, 'secondary', openPrebookMenu),
     action('Status på tjekket', 'secondary', openStatus),
     action('App', 'secondary', openAppSettings),
     appLink(),
@@ -1209,6 +1291,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 setInterval(tickLive, LIVE_TICK_MS);
+setInterval(() => { if (!document.hidden && !$('app').hidden) renderNext(); }, 30 * 1000);
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 if (saved.user && saved.password) showApp();

@@ -58,6 +58,11 @@ input {
   width: calc(100% - 24px); margin: 10px 12px 2px; background: var(--panel); color: var(--text);
   border: 1px solid var(--line); font-size: .95rem;
 }
+.next {
+  display: grid; gap: 1px; margin: 10px 12px 0; padding: 10px 14px; background: var(--panel);
+  border: 1px solid var(--line); border-left: 4px solid var(--mine); border-radius: 12px;
+}
+.next strong { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
 .chip.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 
 .machine.free { --state: var(--free); }
