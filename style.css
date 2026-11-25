@@ -63,7 +63,8 @@ input {
 .machine.free { --state: var(--free); }
 .machine.busy { --state: var(--busy); }
 .machine.done { --state: var(--mine); }
-.machine.reserved, .machine.other { --state: var(--taken-text); }
+.machine.reserved, .machine.used, .machine.other { --state: var(--taken-text); }
+.machine.yours { --state: var(--free); }
 .machine.mine { border-color: var(--mine); border-top-color: var(--state); box-shadow: 0 0 0 1px var(--mine); }
 #live { padding: 10px 12px 0; }
 #liveUnits { display: grid; grid-template-columns: repeat(auto-fit, minmax(56px, 1fr)); gap: 6px; }
@@ -96,6 +97,9 @@ input {
 .booking.active { background: var(--mine); color: var(--mine-text); border-color: var(--mine); }
 .booking.active .where { color: inherit; }
 .badge { font-size: .75rem; font-weight: 700; }
+.booking.pre { border-style: dashed; border-color: var(--mine); }
+.booking.pre .badge { color: var(--mine); }
+.badge.auto { font-weight: 600; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 1px 5px; }
 
 #calendar { padding: 0 12px; }
 .row { display: grid; grid-template-columns: 52px repeat(5, 1fr); gap: 4px; margin-bottom: 4px; align-items: stretch; }
@@ -114,8 +118,10 @@ input {
 }
 .cell.free { background: var(--free); color: var(--free-text); font-weight: 600; }
 .cell.mine, .cell.active { background: var(--mine); color: var(--mine-text); font-weight: 600; }
+.cell.mine.auto { background: color-mix(in srgb, var(--mine) 70%, var(--panel)); }
 .cell.max { background: none; border: 1.5px dashed var(--free); color: var(--text); }
 .cell.past { background: none; }
+.cell.pre { background: none; border: 1.5px dashed var(--mine); color: var(--mine); font-weight: 600; }
 .flash { animation: flash 2.4s ease-out; border-radius: 8px; }
 @keyframes flash { 0%, 50% { background: color-mix(in srgb, var(--accent) 35%, transparent); } }
 @media (prefers-reduced-motion: reduce) { .flash { animation: none; outline: 2px solid var(--accent); } }
