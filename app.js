@@ -131,11 +131,16 @@ function parseCalendar(data) {
       return {
         index, start: clock(start), end: clock(start + turn.Duration),
         kind: slotKind(turn), token: turn.Session || null,
+        // Én værdi pr. maskine i samme rækkefølge som units: 0 fri, 7 din, ellers en andens.
+        occupied: turn.Occupied || null,
       };
     });
     return { date: day.Date.slice(0, 10), slots };
   });
-  return { days, remaining: raw.Remaning, place: section.Title || 'Vasketider', session: data.Session };
+  return {
+    days, remaining: raw.Remaning, place: section.Title || 'Vasketider', session: data.Session,
+    units: (raw.Units || []).map((unit) => unit.Text),
+  };
 }
 
 async function fetchCalendar(retry = true) {
@@ -475,27 +480,45 @@ function trackMachines(section) {
   save();
 }
 
-// Tiderne i kalenderen for det viste vaskeri, som Date, med hvem der har dem.
-function slotsAround(now) {
+// Hvem der har en tid på netop denne maskine. En tid kan være booket på kun nogle af maskinerne.
+function slotOwner(slot, unit) {
+  const index = view.units?.indexOf(unit.text) ?? -1;
+  if (slot.occupied && index >= 0 && index < slot.occupied.length) {
+    const value = slot.occupied[index];
+    return value === 7 ? 'mine' : value === 0 ? 'none' : 'other';
+  }
+  return slot.kind === 'mine' ? 'mine' : slot.kind === 'taken' ? 'other' : 'none';
+}
+
+// Tiderne i kalenderen for det viste vaskeri, som Date, med hvem der har dem på maskinen.
+function slotsAround(now, unit) {
   const dates = [isoDate(now), isoDate(addDays(now, 1))];
   return view.days.filter((day) => dates.includes(day.date)).flatMap((day) => day.slots.map((slot) => ({
     start: new Date(`${day.date}T${slot.start}:00`),
     end: new Date(`${day.date}T${slot.end}:00`),
-    owner: slot.kind === 'mine' ? 'mine' : slot.kind === 'taken' ? 'other' : 'none',
+    owner: slotOwner(slot, unit),
   })));
 }
 
 const timeOf = (date) => clock(date.getHours() * 60 + date.getMinutes());
 
-// Hvad en maskine betyder for dig lige nu: { kind, until, exact, next }.
+// Hvad en maskine betyder for dig lige nu: { kind, until, exact, next, reservedAt }.
 function machineState(section, unit) {
   const kind = MACHINE_KIND[unit.status] || 'other';
   if (kind === 'reserved' && turnSoon(section.title)) return { kind: 'yours' };
   if (isDryer(unit)) return { kind: kind === 'done' && !isMine(section, unit) ? 'free' : kind };
   if (isMine(section, unit) || !['done', 'reserved', 'free'].includes(kind)) return { kind };
-
+  const state = freeState(kind, section, unit);
+  // Som i e-vaskeri: en fri maskine viser, hvornår den næste gang er reserveret i dag.
   const now = new Date();
-  const slots = slotsAround(now);
+  const booked = slotsAround(now, unit).find((slot) => slot.start > now && slot.owner === 'other');
+  if (booked && isoDate(booked.start) === isoDate(now)) state.reservedAt = booked.start;
+  return state;
+}
+
+function freeState(kind, section, unit) {
+  const now = new Date();
+  const slots = slotsAround(now, unit);
   let freeAt = null;
   let exact = true;
   if (kind === 'done') {
@@ -508,10 +531,10 @@ function machineState(section, unit) {
     if (current && now - current.start < GRACE_MS) freeAt = new Date(current.start.getTime() + GRACE_MS);
   }
 
-  const next = slots.find((slot) => slot.start > now);
+  // Din egen næste tid på maskinen: den sidste time før kan maskinen startes til den.
+  const next = slots.find((slot) => slot.start > now && slot.owner !== 'none');
   const opensAt = freeAt && freeAt > now ? freeAt : now;
-  if (next && next.owner !== 'none' && opensAt >= next.start - LOCK_BEFORE_MS) {
-    if (next.owner === 'other') return { kind: 'locked', next };
+  if (next?.owner === 'mine' && opensAt >= next.start - LOCK_BEFORE_MS) {
     return freeAt && freeAt > now ? { kind: 'wait', until: freeAt, exact, next, toMine: true } : { kind: 'yours' };
   }
   if (freeAt && freeAt > now) return { kind: 'wait', until: freeAt, exact, next };
@@ -520,7 +543,7 @@ function machineState(section, unit) {
 }
 
 const minutesUntil = (date) => Math.max(1, Math.ceil((date - Date.now()) / 60000));
-const DOOR_TEXT = { free: 'Fri', done: 'Klar', yours: 'Din', locked: 'Låst' };
+const DOOR_TEXT = { free: 'Fri', done: 'Klar', yours: 'Din' };
 
 function door(unit, state) {
   const node = el('span', 'door');
@@ -537,9 +560,8 @@ function stateText(unit, state) {
     const who = state.toMine ? 'din' : 'fri for alle';
     return `${who} om ${state.exact ? '' : 'højst '}${minutesUntil(state.until)} min (kl. ${timeOf(state.until)})`;
   }
-  if (state.kind === 'locked') return `låst til næste tid kl. ${timeOf(state.next.start)}`;
   if (state.kind === 'yours') return 'kan startes til din tid';
-  return unit.status;
+  return state.reservedAt ? `${unit.status}, reserveret ${timeOf(state.reservedAt)}` : unit.status;
 }
 
 function machine(section, unit) {
@@ -552,6 +574,7 @@ function machine(section, unit) {
   node.setAttribute('role', 'img');
   node.setAttribute('aria-label', `${unit.text}${owner ? ' (din)' : ''}: ${stateText(unit, state)}${left}`);
   node.append(door(unit, state), el('span', 'name', shortMachine(unit.text)));
+  if (state.reservedAt) node.append(el('span', 'reserved-at', `res. ${timeOf(state.reservedAt)}`));
   return node;
 }
 
@@ -583,11 +606,6 @@ function renderLive() {
   }
   for (const [unit, state] of states.filter(([, s]) => s.kind === 'wait')) {
     details.push(el('p', 'detail', `${shortMachine(unit.text)}: ${stateText(unit, state)}`));
-  }
-  // Låste maskiner samles på én linje, de er låst til samme tid.
-  const locked = states.filter(([, state]) => state.kind === 'locked');
-  if (locked.length) {
-    details.push(el('p', 'detail muted', `${machineList(locked.map(([unit]) => unit.text))}: ${stateText(...locked[0])}`));
   }
   $('liveDetails')?.replaceChildren(...details);
   $('liveUpdated').textContent = section.updated;
